@@ -95,6 +95,7 @@ class Diagram extends MarkdownRenderChild {
   private view = { x: 30, y: 30, k: 1 };
   private movedTables = new Set<string>();
   private saveTimer = 0;
+  private colorInput?: HTMLInputElement;
   private plugin?: DbmlErdPlugin;
   private ctx?: MarkdownPostProcessorContext;
   private blockEl?: HTMLElement;
@@ -137,7 +138,8 @@ class Diagram extends MarkdownRenderChild {
     if (opts?.view) this.view = { ...opts.view };
 
     const host = parent.createDiv({ cls: "dbml-erd-canvas" });
-    if (opts?.height) host.style.height = opts.height + "px";
+    if (opts?.height)
+      host.style.setProperty("--dbml-erd-height", opts.height + "px");
     this.svg = activeDocument.createElementNS(NS, "svg");
     this.svg.classList.add("dbml-erd-svg");
     this.vp = activeDocument.createElementNS(NS, "g");
@@ -152,7 +154,7 @@ class Diagram extends MarkdownRenderChild {
     const bar = host.createDiv({ cls: "dbml-erd-toolbar" });
     this.btn(bar, "+", () => this.zoom(1.15));
     this.btn(bar, "−", () => this.zoom(0.87));
-    this.btn(bar, "⊡", () => this.fit());
+    this.btn(bar, "⊡", () => this.fit(true));
 
     this.drawNodes();
     this.redrawEdges();
@@ -164,18 +166,22 @@ class Diagram extends MarkdownRenderChild {
 
   onunload() {
     if (this.saveTimer) activeWindow.clearTimeout(this.saveTimer);
+    this.colorInput?.remove();
+    this.colorInput = undefined;
   }
 
   private btn(bar: HTMLElement, label: string, cb: () => void) {
     const b = bar.createEl("button", { text: label });
-    b.onclick = cb;
+    this.registerDomEvent(b, "click", cb);
   }
 
   // ---- geometría ----
   private colRowY(table: string, col: string): number {
-    const t = this.model.tables.find((t) => t.name === table)!;
+    const t = this.model.tables.find((t) => t.name === table);
+    if (!t) return HEAD_H / 2;
     const i = t.cols.findIndex((c) => c.name === col);
-    return HEAD_H + i * ROW_H + ROW_H / 2;
+    const idx = i < 0 ? 0 : i;
+    return HEAD_H + idx * ROW_H + ROW_H / 2;
   }
 
   // ruteo manhattan (para drag): Z entre puertos de columna
@@ -187,14 +193,19 @@ class Diagram extends MarkdownRenderChild {
     const by = B.y + this.colRowY(r.to, r.toCol);
     const aCx = A.x + NODE_W / 2;
     const bCx = B.x + NODE_W / 2;
-    const aRight = bCx >= aCx;
+    // Si las tablas se solapan en X (apiladas), ambas salen por el mismo lado
+    // y la línea rodea por fuera; si no, cada una mira hacia la otra.
+    const overlapX = Math.abs(bCx - aCx) < NODE_W;
+    const aRight = overlapX ? true : bCx >= aCx;
+    const bRight = overlapX ? true : !aRight;
     const ax = aRight ? A.x + NODE_W : A.x;
-    const bRight = aCx > bCx;
     const bx = bRight ? B.x + NODE_W : B.x;
     const stub = 18;
     const ax2 = ax + (aRight ? stub : -stub);
     const bx2 = bx + (bRight ? stub : -stub);
-    const midX = (ax2 + bx2) / 2;
+    // al solaparse en X ambas salen al este: el canal vertical va por fuera del
+    // borde más a la derecha (no el promedio, que cruzaría un cuerpo).
+    const midX = overlapX ? Math.max(ax2, bx2) : (ax2 + bx2) / 2;
     return {
       pts: [
         { x: ax, y: ay },
@@ -370,10 +381,10 @@ class Diagram extends MarkdownRenderChild {
       const headTxt = this.text(14, HEAD_H / 2 + 4, t.name, "dbml-head-txt");
       g.appendChild(headTxt);
       if (t.headerColor) {
-        head.style.fill = t.headerColor;
-        headFix.style.fill = t.headerColor;
+        // variables CSS (no estilos estáticos inline): styles.css las consume
+        g.style.setProperty("--dbml-head-fill", t.headerColor);
         const tc = this.readableText(t.headerColor);
-        if (tc) headTxt.style.fill = tc;
+        if (tc) g.style.setProperty("--dbml-head-txt-fill", tc);
       }
 
       t.cols.forEach((c, i) => {
@@ -418,22 +429,58 @@ class Diagram extends MarkdownRenderChild {
     });
   }
 
-  // elige color de texto legible (blanco u oscuro) según la luminancia del fondo
+  // elige color de texto legible (blanco u oscuro) según la luminancia del fondo.
+  // Resuelve hex/rgb()/hsl()/nombres normalizando con un canvas.
   private readableText(color: string): string {
-    const raw = color.trim().replace("#", "");
-    const hex =
-      raw.length === 3
-        ? raw
-            .split("")
-            .map((c) => c + c)
-            .join("")
-        : raw;
-    if (!/^[0-9a-fA-F]{6}$/.test(hex)) return "#ffffff"; // color con nombre/rgb: asume oscuro
-    const r = parseInt(hex.slice(0, 2), 16);
-    const g = parseInt(hex.slice(2, 4), 16);
-    const b = parseInt(hex.slice(4, 6), 16);
-    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    const rgb = this.toRgb(color);
+    if (!rgb) return "#ffffff";
+    const lum = (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255;
     return lum > 0.6 ? "#1a1a1a" : "#ffffff";
+  }
+
+  private static colorCtx?: CanvasRenderingContext2D | null;
+  private toRgb(color: string): [number, number, number] | null {
+    const raw = color.trim().replace(/^#/, "");
+    if (/^[0-9a-fA-F]{3}$/.test(raw)) {
+      const h = raw
+        .split("")
+        .map((c) => c + c)
+        .join("");
+      return [
+        parseInt(h.slice(0, 2), 16),
+        parseInt(h.slice(2, 4), 16),
+        parseInt(h.slice(4, 6), 16),
+      ];
+    }
+    if (/^[0-9a-fA-F]{6}$/.test(raw))
+      return [
+        parseInt(raw.slice(0, 2), 16),
+        parseInt(raw.slice(2, 4), 16),
+        parseInt(raw.slice(4, 6), 16),
+      ];
+    // rgb()/hsl()/nombre: normaliza con canvas
+    if (Diagram.colorCtx === undefined) {
+      const cv = activeDocument.createElement("canvas");
+      cv.width = cv.height = 1;
+      Diagram.colorCtx = cv.getContext("2d");
+    }
+    const ctx = Diagram.colorCtx;
+    if (!ctx) return null;
+    ctx.fillStyle = "#000000";
+    ctx.fillStyle = color;
+    const norm = ctx.fillStyle; // "#rrggbb" o "rgba(r, g, b, a)"
+    if (norm.startsWith("#")) {
+      const h = norm.slice(1);
+      return [
+        parseInt(h.slice(0, 2), 16),
+        parseInt(h.slice(2, 4), 16),
+        parseInt(h.slice(4, 6), 16),
+      ];
+    }
+    const mm = norm.match(/(\d+(?:\.\d+)?)/g);
+    if (mm && mm.length >= 3)
+      return [Number(mm[0]), Number(mm[1]), Number(mm[2])];
+    return null;
   }
 
   private rect(x: number, y: number, w: number, h: number, cls: string) {
@@ -464,6 +511,8 @@ class Diagram extends MarkdownRenderChild {
       moved = false,
       onHeader = false,
       colIdx = -1;
+    // Pointer capture: mv/up se enganchan al propio nodo (elemento propio que
+    // se libera con el DOM al descargar), no a window -> sin fugas de listeners.
     g.addEventListener("pointerdown", (ev: PointerEvent) => {
       ev.stopPropagation();
       ev.preventDefault();
@@ -479,6 +528,11 @@ class Diagram extends MarkdownRenderChild {
       sy = ev.clientY;
       ox = this.pos[name].x;
       oy = this.pos[name].y;
+      try {
+        g.setPointerCapture(ev.pointerId);
+      } catch {
+        /* noop */
+      }
       const mv = (e: PointerEvent) => {
         if (!dragging) return;
         if (!moved && Math.hypot(e.clientX - sx, e.clientY - sy) < 4) return;
@@ -494,18 +548,27 @@ class Diagram extends MarkdownRenderChild {
       };
       const up = (e: PointerEvent) => {
         dragging = false;
-        window.removeEventListener("pointermove", mv);
-        window.removeEventListener("pointerup", up);
+        g.removeEventListener("pointermove", mv);
+        g.removeEventListener("pointerup", up);
+        g.removeEventListener("pointercancel", up);
+        try {
+          g.releasePointerCapture(e.pointerId);
+        } catch {
+          /* noop */
+        }
         if (moved) {
           this.scheduleSaveLayout();
+        } else if (e.type === "pointercancel") {
+          // gesto abortado: no abrir menú
         } else if (onHeader) {
           this.openHeaderMenu(name, e);
         } else if (colIdx >= 0) {
           this.openColumnMenu(name, colIdx, e);
         }
       };
-      window.addEventListener("pointermove", mv);
-      window.addEventListener("pointerup", up);
+      g.addEventListener("pointermove", mv);
+      g.addEventListener("pointerup", up);
+      g.addEventListener("pointercancel", up);
     });
   }
 
@@ -571,6 +634,24 @@ class Diagram extends MarkdownRenderChild {
     new EditModal(this.plugin.app, title, initial, cb).open();
   }
 
+  private isFence(line: string | undefined): boolean {
+    return !!line && /^\s*(```|~~~)/.test(line);
+  }
+
+  // Valida que lineStart sea una cerca y localiza la cerca de cierre escaneando
+  // hacia adelante (robusto a que el bloque haya crecido con líneas @pos/@view
+  // desde que se cacheó el sectionInfo). Devuelve [open, close] o null.
+  private blockRange(
+    lines: string[],
+    lineStart: number
+  ): [number, number] | null {
+    if (!this.isFence(lines[lineStart])) return null;
+    for (let i = lineStart + 1; i < lines.length; i++) {
+      if (this.isFence(lines[i])) return [lineStart, i];
+    }
+    return null;
+  }
+
   // ---- edición de textos (rename / tipo) ----
   private async editBlock(
     mutate: (lines: string[], start: number, end: number) => boolean,
@@ -586,13 +667,23 @@ class Diagram extends MarkdownRenderChild {
       this.ctx.sourcePath
     );
     if (!(file instanceof TFile)) return;
-    const content = await this.plugin.app.vault.read(file);
-    const lines = content.split("\n");
-    if (!mutate(lines, info.lineStart, info.lineEnd)) {
-      new Notice(notFoundMsg);
-      return;
-    }
-    await this.plugin.app.vault.modify(file, lines.join("\n"));
+    let ok = true;
+    // vault.process: lectura-modificación-escritura atómica (no pisa ediciones
+    // concurrentes entre read y modify).
+    await this.plugin.app.vault.process(file, (data) => {
+      const lines = data.split("\n");
+      const range = this.blockRange(lines, info.lineStart);
+      if (!range) {
+        ok = false;
+        return data;
+      }
+      if (!mutate(lines, range[0], range[1])) {
+        ok = false;
+        return data;
+      }
+      return lines.join("\n");
+    });
+    if (!ok) new Notice(notFoundMsg);
   }
 
   private renameTable(oldName: string, newName: string) {
@@ -632,45 +723,54 @@ class Diagram extends MarkdownRenderChild {
       this.ctx.sourcePath
     );
     if (!(file instanceof TFile)) return;
-    const content = await this.plugin.app.vault.read(file);
-    const lines = content.split("\n");
-    const open = info.lineStart;
-    const close = info.lineEnd;
-    const body = lines
-      .slice(open + 1, close)
-      .filter((l) => !/^\s*\/\/\s*@(pos|view)\b/.test(l));
-    const posLines = this.model.tables
-      .filter((t) => this.pos[t.name])
-      .map((t) => {
-        const p = this.pos[t.name];
-        return `// @pos ${t.name} ${Math.round(p.x)} ${Math.round(p.y)}`;
-      });
-    const viewLine = `// @view ${Math.round(this.view.x)} ${Math.round(
-      this.view.y
-    )} ${this.view.k.toFixed(3)}`;
-    const newLines = [
-      ...lines.slice(0, open + 1),
-      ...body,
-      ...posLines,
-      viewLine,
-      ...lines.slice(close),
-    ];
-    await this.plugin.app.vault.modify(file, newLines.join("\n"));
+    await this.plugin.app.vault.process(file, (data) => {
+      const lines = data.split("\n");
+      const range = this.blockRange(lines, info.lineStart);
+      if (!range) return data;
+      const [open, close] = range;
+      const body = lines
+        .slice(open + 1, close)
+        .filter((l) => !/^\s*\/\/\s*@(pos|view)\b/.test(l));
+      // solo persiste posición de tablas que el usuario movió (las demás
+      // siguen con auto-layout); la vista siempre se persiste.
+      const posLines = this.model.tables
+        .filter((t) => this.pos[t.name] && this.movedTables.has(t.name))
+        .map((t) => {
+          const p = this.pos[t.name];
+          return `// @pos ${t.name} ${Math.round(p.x)} ${Math.round(p.y)}`;
+        });
+      const viewLine = `// @view ${Math.round(this.view.x)} ${Math.round(
+        this.view.y
+      )} ${this.view.k.toFixed(3)}`;
+      return [
+        ...lines.slice(0, open + 1),
+        ...body,
+        ...posLines,
+        viewLine,
+        ...lines.slice(close),
+      ].join("\n");
+    });
   }
 
   private pickColor(name: string) {
     const current =
       this.model.tables.find((t) => t.name === name)?.headerColor || "";
+    this.colorInput?.remove();
     const input = activeDocument.createElement("input");
+    this.colorInput = input;
     input.type = "color";
     input.value = /^#[0-9a-fA-F]{6}$/.test(current) ? current : "#5c7fa3";
     input.classList.add("dbml-color-input");
     activeDocument.body.appendChild(input);
-    input.addEventListener("change", () => {
-      this.setHeaderColor(name, input.value);
+    const cleanup = () => {
       input.remove();
+      if (this.colorInput === input) this.colorInput = undefined;
+    };
+    this.registerDomEvent(input, "change", () => {
+      this.setHeaderColor(name, input.value);
+      cleanup();
     });
-    input.addEventListener("blur", () => input.remove());
+    this.registerDomEvent(input, "blur", cleanup);
     input.click();
   }
 
@@ -685,22 +785,22 @@ class Diagram extends MarkdownRenderChild {
       this.ctx.sourcePath
     );
     if (!(file instanceof TFile)) return;
-    const content = await this.plugin.app.vault.read(file);
-    const lines = content.split("\n");
     let done = false;
-    for (let i = info.lineStart; i <= info.lineEnd && i < lines.length; i++) {
-      const updated = setHeaderColorInLine(lines[i], name, color);
-      if (updated !== null) {
-        lines[i] = updated;
-        done = true;
-        break;
+    await this.plugin.app.vault.process(file, (data) => {
+      const lines = data.split("\n");
+      const range = this.blockRange(lines, info.lineStart);
+      if (!range) return data;
+      for (let i = range[0]; i <= range[1] && i < lines.length; i++) {
+        const updated = setHeaderColorInLine(lines[i], name, color);
+        if (updated !== null) {
+          lines[i] = updated;
+          done = true;
+          break;
+        }
       }
-    }
-    if (!done) {
-      new Notice(`DBML ERD: no se encontró la tabla "${name}".`);
-      return;
-    }
-    await this.plugin.app.vault.modify(file, lines.join("\n"));
+      return done ? lines.join("\n") : data;
+    });
+    if (!done) new Notice(`DBML ERD: no se encontró la tabla "${name}".`);
   }
 
   private bindPanZoom(host: HTMLElement) {
@@ -718,15 +818,17 @@ class Diagram extends MarkdownRenderChild {
       pvx = this.view.x;
       pvy = this.view.y;
     });
-    this.registerDomEvent(window, "pointermove", (e: PointerEvent) => {
+    this.registerDomEvent(activeWindow, "pointermove", (e: PointerEvent) => {
       if (!panning) return;
       this.view.x = pvx + (e.clientX - psx);
       this.view.y = pvy + (e.clientY - psy);
       this.applyView();
     });
-    this.registerDomEvent(window, "pointerup", () => {
+    this.registerDomEvent(activeWindow, "pointerup", () => {
+      if (!panning) return;
       panning = false;
       host.removeClass("panning");
+      this.scheduleSaveLayout();
     });
     this.registerDomEvent(host, "wheel", (e: WheelEvent) => {
       e.preventDefault();
@@ -738,12 +840,14 @@ class Diagram extends MarkdownRenderChild {
       this.view.y = my - (my - this.view.y) * f;
       this.view.k *= f;
       this.applyView();
+      this.scheduleSaveLayout();
     });
   }
 
   private zoom(f: number) {
     this.view.k *= f;
     this.applyView();
+    this.scheduleSaveLayout();
   }
   private applyView() {
     this.vp.setAttribute(
@@ -751,7 +855,7 @@ class Diagram extends MarkdownRenderChild {
       `translate(${this.view.x},${this.view.y}) scale(${this.view.k})`
     );
   }
-  private fit() {
+  private fit(persist = false) {
     const r = this.svg.getBoundingClientRect();
     if (r.width === 0) return;
     let minX = 1e9,
@@ -778,6 +882,7 @@ class Diagram extends MarkdownRenderChild {
       (r.width - pad * 2 - (maxX - minX) * this.view.k) / 2;
     this.view.y = pad - minY * this.view.k;
     this.applyView();
+    if (persist) this.scheduleSaveLayout();
   }
 }
 

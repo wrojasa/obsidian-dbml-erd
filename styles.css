@@ -46,11 +46,11 @@
   fill: var(--background-primary-alt);
 }
 .dbml-head {
-  fill: var(--interactive-accent);
+  fill: var(--dbml-head-fill, var(--interactive-accent));
   cursor: pointer;
 }
 .dbml-head-txt {
-  fill: var(--text-on-accent);
+  fill: var(--dbml-head-txt-fill, var(--text-on-accent));
   font-weight: 700;
   font-size: 13px;
   cursor: pointer;

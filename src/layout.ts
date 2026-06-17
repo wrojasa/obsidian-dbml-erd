@@ -36,9 +36,11 @@ export function tableHeight(colCount: number): number {
   return HEAD_H + colCount * ROW_H;
 }
 function colRowY(model: Model, table: string, col: string): number {
-  const t = model.tables.find((t) => t.name === table)!;
+  const t = model.tables.find((t) => t.name === table);
+  if (!t) return HEAD_H / 2;
   const i = t.cols.findIndex((c) => c.name === col);
-  return HEAD_H + i * ROW_H + ROW_H / 2;
+  const idx = i < 0 ? 0 : i;
+  return HEAD_H + idx * ROW_H + ROW_H / 2;
 }
 
 export async function computeLayout(model: Model): Promise<LayoutResult> {
@@ -97,12 +99,19 @@ export async function computeLayout(model: Model): Promise<LayoutResult> {
       h: n.height ?? 0,
     };
   }
-  const edgePaths: EdgePath[] = (res.edges ?? []).map((e) => {
-    const sec = (e as ElkExtendedEdge).sections?.[0];
-    if (!sec) return { pts: [] };
-    const pts = [sec.startPoint, ...(sec.bendPoints ?? []), sec.endPoint];
-    return { pts };
-  });
+  // Indexa por id de arista ('e'+i) en vez de confiar en el orden de salida
+  // de ELK, que no está garantizado que coincida con el de entrada.
+  const byId: Record<string, Pt[]> = {};
+  for (const e of res.edges ?? []) {
+    const ee = e as ElkExtendedEdge;
+    const sec = ee.sections?.[0];
+    byId[ee.id ?? ""] = sec
+      ? [sec.startPoint, ...(sec.bendPoints ?? []), sec.endPoint]
+      : [];
+  }
+  const edgePaths: EdgePath[] = model.refs.map((_, i) => ({
+    pts: byId["e" + i] ?? [],
+  }));
   return { nodes, edges: edgePaths };
 }
 
