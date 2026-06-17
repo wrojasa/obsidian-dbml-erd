@@ -1,4 +1,8 @@
-import { Plugin, MarkdownPostProcessorContext } from "obsidian";
+import {
+  Plugin,
+  MarkdownPostProcessorContext,
+  MarkdownRenderChild,
+} from "obsidian";
 import { parseDBML, Model, Ref } from "./parser";
 import {
   computeLayout,
@@ -17,13 +21,17 @@ export default class DbmlErdPlugin extends Plugin {
     const handler = (
       source: string,
       el: HTMLElement,
-      _ctx: MarkdownPostProcessorContext
-    ) => this.renderBlock(source, el);
+      ctx: MarkdownPostProcessorContext
+    ) => this.renderBlock(source, el, ctx);
     this.registerMarkdownCodeBlockProcessor("dbml", handler);
     this.registerMarkdownCodeBlockProcessor("DBML", handler);
   }
 
-  async renderBlock(source: string, el: HTMLElement) {
+  async renderBlock(
+    source: string,
+    el: HTMLElement,
+    ctx: MarkdownPostProcessorContext
+  ) {
     el.empty();
     const wrap = el.createDiv({ cls: "dbml-erd-wrap" });
     wrap.setText("Renderizando ERD…");
@@ -43,14 +51,14 @@ export default class DbmlErdPlugin extends Plugin {
       wrap.empty();
       const hMatch = source.match(/\/\/\s*(?:canvas-)?height:\s*(\d+)/i);
       const height = hMatch ? parseInt(hMatch[1], 10) : undefined;
-      new Diagram(wrap, model, layout, { height });
+      ctx.addChild(new Diagram(wrap, model, layout, { height }));
     } catch (e: any) {
       wrap.setText("Error de layout: " + e.message);
     }
   }
 }
 
-class Diagram {
+class Diagram extends MarkdownRenderChild {
   private model: Model;
   private pos: Record<string, NodePos>;
   private elkEdges: Pt[][]; // ruta ELK original por ref
@@ -67,6 +75,7 @@ class Diagram {
     layout: LayoutResult,
     opts?: { height?: number }
   ) {
+    super(parent);
     this.model = model;
     this.pos = layout.nodes;
     this.elkEdges = layout.edges.map((e) => e.pts);
@@ -369,15 +378,16 @@ class Diagram {
       ox = 0,
       oy = 0,
       dragging = false;
-    g.addEventListener("mousedown", (ev: MouseEvent) => {
+    g.addEventListener("pointerdown", (ev: PointerEvent) => {
       ev.stopPropagation();
+      ev.preventDefault();
       dragging = true;
       this.movedTables.add(name);
       sx = ev.clientX;
       sy = ev.clientY;
       ox = this.pos[name].x;
       oy = this.pos[name].y;
-      const mv = (e: MouseEvent) => {
+      const mv = (e: PointerEvent) => {
         if (!dragging) return;
         this.pos[name].x = ox + (e.clientX - sx) / this.view.k;
         this.pos[name].y = oy + (e.clientY - sy) / this.view.k;
@@ -389,11 +399,11 @@ class Diagram {
       };
       const up = () => {
         dragging = false;
-        document.removeEventListener("mousemove", mv);
-        document.removeEventListener("mouseup", up);
+        window.removeEventListener("pointermove", mv);
+        window.removeEventListener("pointerup", up);
       };
-      document.addEventListener("mousemove", mv);
-      document.addEventListener("mouseup", up);
+      window.addEventListener("pointermove", mv);
+      window.addEventListener("pointerup", up);
     });
   }
 
@@ -403,7 +413,7 @@ class Diagram {
       psy = 0,
       pvx = 0,
       pvy = 0;
-    host.addEventListener("mousedown", (e: MouseEvent) => {
+    this.registerDomEvent(host, "pointerdown", (e: PointerEvent) => {
       if ((e.target as Element).closest(".dbml-node")) return;
       panning = true;
       host.addClass("panning");
@@ -412,31 +422,27 @@ class Diagram {
       pvx = this.view.x;
       pvy = this.view.y;
     });
-    window.addEventListener("mousemove", (e: MouseEvent) => {
+    this.registerDomEvent(window, "pointermove", (e: PointerEvent) => {
       if (!panning) return;
       this.view.x = pvx + (e.clientX - psx);
       this.view.y = pvy + (e.clientY - psy);
       this.applyView();
     });
-    window.addEventListener("mouseup", () => {
+    this.registerDomEvent(window, "pointerup", () => {
       panning = false;
       host.removeClass("panning");
     });
-    host.addEventListener(
-      "wheel",
-      (e: WheelEvent) => {
-        e.preventDefault();
-        const f = e.deltaY < 0 ? 1.12 : 0.89;
-        const r = host.getBoundingClientRect();
-        const mx = e.clientX - r.left;
-        const my = e.clientY - r.top;
-        this.view.x = mx - (mx - this.view.x) * f;
-        this.view.y = my - (my - this.view.y) * f;
-        this.view.k *= f;
-        this.applyView();
-      },
-      { passive: false }
-    );
+    this.registerDomEvent(host, "wheel", (e: WheelEvent) => {
+      e.preventDefault();
+      const f = e.deltaY < 0 ? 1.12 : 0.89;
+      const r = host.getBoundingClientRect();
+      const mx = e.clientX - r.left;
+      const my = e.clientY - r.top;
+      this.view.x = mx - (mx - this.view.x) * f;
+      this.view.y = my - (my - this.view.y) * f;
+      this.view.k *= f;
+      this.applyView();
+    });
   }
 
   private zoom(f: number) {

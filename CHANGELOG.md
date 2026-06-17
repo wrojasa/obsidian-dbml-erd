@@ -2,6 +2,14 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.4] - 2026-06-17
+
+### Cambiado
+
+- Eventos migrados a pointer events: el drag y el pan ahora funcionan también en móvil (táctil).
+- Los listeners globales se registran con `registerDomEvent` y se limpian al cerrar/re-renderizar la nota (sin fugas de memoria).
+- `touch-action: none` en el lienzo para que el arrastre táctil no haga scroll de la página.
+
 ## [0.1.3] - 2026-06-17
 
 ### Cambiado
