@@ -13,6 +13,7 @@ export interface Column {
 export interface Table {
   name: string;
   note?: string;
+  headerColor?: string;
   cols: Column[];
 }
 export type Cardinality = ">" | "<" | "<>" | "-";
@@ -37,17 +38,22 @@ export function parseDBML(input: string): Model {
   const relRe =
     /(?:Ref:\s*)?([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\s*(<>|>|<|-)\s*([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)/g;
   const tableRe =
-    /(?:Table\s+)?([A-Za-z0-9_"]+)\s*(?:as\s+\w+\s*)?(?:\[[^\]]*\]\s*)?\{([\s\S]*?)\}/g;
+    /(?:Table\s+)?([A-Za-z0-9_"]+)\s*(?:as\s+\w+\s*)?(?:\[([^\]]*)\]\s*)?\{([\s\S]*?)\}/g;
 
   const bodies: [number, number][] = [];
   let m: RegExpExecArray | null;
 
   while ((m = tableRe.exec(src)) !== null) {
     const name = m[1].replace(/"/g, "");
-    const body = m[2];
+    const settings = m[2] || "";
+    const body = m[3];
     bodies.push([m.index, m.index + m[0].length]);
     const cols: Column[] = [];
     let tableNote: string | undefined;
+    const hcMatch = settings.match(
+      /header[_ ]?color:\s*([#A-Za-z0-9(),.\s%]+?)\s*(?:,|$)/i
+    );
+    const headerColor = hcMatch ? hcMatch[1].trim() : undefined;
 
     for (let line of body.split("\n")) {
       line = line.trim();
@@ -86,7 +92,7 @@ export function parseDBML(input: string): Model {
         col.fk = true;
       }
     }
-    tables.push({ name, note: tableNote, cols });
+    tables.push({ name, note: tableNote, headerColor, cols });
   }
 
   while ((m = relRe.exec(src)) !== null) {
@@ -109,4 +115,32 @@ export function parseDBML(input: string): Model {
   }
 
   return { tables, refs };
+}
+
+// Edita la línea de declaración de una tabla para fijar/quitar headercolor.
+// Devuelve la línea nueva, o null si la línea no declara esa tabla.
+export function setHeaderColorInLine(
+  line: string,
+  tableName: string,
+  color: string | null
+): string | null {
+  const esc = tableName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(
+    `^(\\s*(?:Table\\s+)?"?${esc}"?\\s*(?:as\\s+\\w+\\s*)?)(\\[[^\\]]*\\])?(\\s*\\{.*)$`
+  );
+  const m = line.match(re);
+  if (!m) return null;
+  const head = m[1].replace(/\s+$/, "");
+  const inner = (m[2] || "").replace(/^\[|\]$/g, "");
+  const rest = " " + m[3].replace(/^\s*/, "");
+
+  // separa settings por coma respetando comillas simples
+  const parts = inner
+    ? inner.split(/,(?=(?:[^']*'[^']*')*[^']*$)/).map((p) => p.trim()).filter(Boolean)
+    : [];
+  const filtered = parts.filter((p) => !/^header[_ ]?color\s*:/i.test(p));
+  if (color) filtered.push(`headercolor: ${color}`);
+
+  const bracket = filtered.length ? ` [${filtered.join(", ")}]` : "";
+  return head + bracket + rest;
 }

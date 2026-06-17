@@ -2,8 +2,11 @@ import {
   Plugin,
   MarkdownPostProcessorContext,
   MarkdownRenderChild,
+  Menu,
+  Notice,
+  TFile,
 } from "obsidian";
-import { parseDBML, Model, Ref } from "./parser";
+import { parseDBML, Model, Ref, setHeaderColorInLine } from "./parser";
 import {
   computeLayout,
   LayoutResult,
@@ -51,7 +54,9 @@ export default class DbmlErdPlugin extends Plugin {
       wrap.empty();
       const hMatch = source.match(/\/\/\s*(?:canvas-)?height:\s*(\d+)/i);
       const height = hMatch ? parseInt(hMatch[1], 10) : undefined;
-      ctx.addChild(new Diagram(wrap, model, layout, { height }));
+      ctx.addChild(
+        new Diagram(wrap, model, layout, { height, plugin: this, ctx, el })
+      );
     } catch (e: any) {
       wrap.setText("Error de layout: " + e.message);
     }
@@ -64,6 +69,9 @@ class Diagram extends MarkdownRenderChild {
   private elkEdges: Pt[][]; // ruta ELK original por ref
   private view = { x: 30, y: 30, k: 1 };
   private movedTables = new Set<string>();
+  private plugin?: DbmlErdPlugin;
+  private ctx?: MarkdownPostProcessorContext;
+  private blockEl?: HTMLElement;
   private svg: SVGSVGElement;
   private vp: SVGGElement;
   private edgeLayer: SVGGElement;
@@ -73,12 +81,20 @@ class Diagram extends MarkdownRenderChild {
     parent: HTMLElement,
     model: Model,
     layout: LayoutResult,
-    opts?: { height?: number }
+    opts?: {
+      height?: number;
+      plugin?: DbmlErdPlugin;
+      ctx?: MarkdownPostProcessorContext;
+      el?: HTMLElement;
+    }
   ) {
     super(parent);
     this.model = model;
     this.pos = layout.nodes;
     this.elkEdges = layout.edges.map((e) => e.pts);
+    this.plugin = opts?.plugin;
+    this.ctx = opts?.ctx;
+    this.blockEl = opts?.el;
 
     const host = parent.createDiv({ cls: "dbml-erd-canvas" });
     if (opts?.height) host.style.height = opts.height + "px";
@@ -313,8 +329,16 @@ class Diagram extends MarkdownRenderChild {
       const head = this.rect(0, 0, NODE_W, HEAD_H, "dbml-head");
       head.setAttribute("rx", "6");
       g.appendChild(head);
-      g.appendChild(this.rect(0, HEAD_H - 8, NODE_W, 8, "dbml-head"));
-      g.appendChild(this.text(14, HEAD_H / 2 + 4, t.name, "dbml-head-txt"));
+      const headFix = this.rect(0, HEAD_H - 8, NODE_W, 8, "dbml-head");
+      g.appendChild(headFix);
+      const headTxt = this.text(14, HEAD_H / 2 + 4, t.name, "dbml-head-txt");
+      g.appendChild(headTxt);
+      if (t.headerColor) {
+        head.style.fill = t.headerColor;
+        headFix.style.fill = t.headerColor;
+        const tc = this.readableText(t.headerColor);
+        if (tc) headTxt.style.fill = tc;
+      }
 
       t.cols.forEach((c, i) => {
         const y = HEAD_H + i * ROW_H + ROW_H / 2 + 4;
@@ -353,6 +377,24 @@ class Diagram extends MarkdownRenderChild {
     });
   }
 
+  // elige color de texto legible (blanco u oscuro) según la luminancia del fondo
+  private readableText(color: string): string {
+    const raw = color.trim().replace("#", "");
+    const hex =
+      raw.length === 3
+        ? raw
+            .split("")
+            .map((c) => c + c)
+            .join("")
+        : raw;
+    if (!/^[0-9a-fA-F]{6}$/.test(hex)) return "#ffffff"; // color con nombre/rgb: asume oscuro
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return lum > 0.6 ? "#1a1a1a" : "#ffffff";
+  }
+
   private rect(x: number, y: number, w: number, h: number, cls: string) {
     const r = document.createElementNS(NS, "rect");
     r.setAttribute("x", "" + x);
@@ -377,18 +419,27 @@ class Diagram extends MarkdownRenderChild {
       sy = 0,
       ox = 0,
       oy = 0,
-      dragging = false;
+      dragging = false,
+      moved = false,
+      onHeader = false;
     g.addEventListener("pointerdown", (ev: PointerEvent) => {
       ev.stopPropagation();
       ev.preventDefault();
       dragging = true;
-      this.movedTables.add(name);
+      moved = false;
+      const tgt = ev.target as Element;
+      onHeader =
+        tgt.classList.contains("dbml-head") ||
+        tgt.classList.contains("dbml-head-txt");
       sx = ev.clientX;
       sy = ev.clientY;
       ox = this.pos[name].x;
       oy = this.pos[name].y;
       const mv = (e: PointerEvent) => {
         if (!dragging) return;
+        if (!moved && Math.hypot(e.clientX - sx, e.clientY - sy) < 4) return;
+        moved = true;
+        this.movedTables.add(name);
         this.pos[name].x = ox + (e.clientX - sx) / this.view.k;
         this.pos[name].y = oy + (e.clientY - sy) / this.view.k;
         g.setAttribute(
@@ -397,14 +448,79 @@ class Diagram extends MarkdownRenderChild {
         );
         this.redrawEdges();
       };
-      const up = () => {
+      const up = (e: PointerEvent) => {
         dragging = false;
         window.removeEventListener("pointermove", mv);
         window.removeEventListener("pointerup", up);
+        if (!moved && onHeader) this.openHeaderMenu(name, e);
       };
       window.addEventListener("pointermove", mv);
       window.addEventListener("pointerup", up);
     });
+  }
+
+  private openHeaderMenu(name: string, evt: PointerEvent) {
+    if (!this.plugin || !this.ctx || !this.blockEl) return;
+    const menu = new Menu();
+    menu.addItem((i) =>
+      i
+        .setTitle("Elegir color…")
+        .setIcon("palette")
+        .onClick(() => this.pickColor(name))
+    );
+    menu.addItem((i) =>
+      i
+        .setTitle("Quitar color")
+        .setIcon("rotate-ccw")
+        .onClick(() => this.setHeaderColor(name, null))
+    );
+    menu.showAtMouseEvent(evt);
+  }
+
+  private pickColor(name: string) {
+    const current =
+      this.model.tables.find((t) => t.name === name)?.headerColor || "";
+    const input = document.createElement("input");
+    input.type = "color";
+    input.value = /^#[0-9a-fA-F]{6}$/.test(current) ? current : "#5c7fa3";
+    input.style.position = "fixed";
+    input.style.left = "-9999px";
+    document.body.appendChild(input);
+    input.addEventListener("change", () => {
+      this.setHeaderColor(name, input.value);
+      input.remove();
+    });
+    input.addEventListener("blur", () => input.remove());
+    input.click();
+  }
+
+  private async setHeaderColor(name: string, color: string | null) {
+    if (!this.plugin || !this.ctx || !this.blockEl) return;
+    const info = this.ctx.getSectionInfo(this.blockEl);
+    if (!info) {
+      new Notice("DBML ERD: no se pudo ubicar el bloque para editar.");
+      return;
+    }
+    const file = this.plugin.app.vault.getAbstractFileByPath(
+      this.ctx.sourcePath
+    );
+    if (!(file instanceof TFile)) return;
+    const content = await this.plugin.app.vault.read(file);
+    const lines = content.split("\n");
+    let done = false;
+    for (let i = info.lineStart; i <= info.lineEnd && i < lines.length; i++) {
+      const updated = setHeaderColorInLine(lines[i], name, color);
+      if (updated !== null) {
+        lines[i] = updated;
+        done = true;
+        break;
+      }
+    }
+    if (!done) {
+      new Notice(`DBML ERD: no se encontró la tabla "${name}".`);
+      return;
+    }
+    await this.plugin.app.vault.modify(file, lines.join("\n"));
   }
 
   private bindPanZoom(host: HTMLElement) {

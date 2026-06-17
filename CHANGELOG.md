@@ -2,6 +2,18 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.6] - 2026-06-17
+
+### Agregado
+
+- Paleta interactiva: clic en el encabezado de una tabla abre un menú para **elegir** o **quitar** color. El plugin escribe `[headercolor: #hex]` de vuelta en el bloque DBML (queda persistente y portable).
+
+## [0.1.5] - 2026-06-17
+
+### Agregado
+
+- Color de encabezado por tabla con `[headercolor: #hex]` (compatible con dbdiagram). El color del texto del encabezado se ajusta solo (blanco u oscuro) según la luminancia.
+
 ## [0.1.4] - 2026-06-17
 
 ### Cambiado

@@ -11,6 +11,8 @@ Plugin de Obsidian que renderiza bloques de código ` ```dbml ` como diagramas e
 - **Ruteo híbrido**: al cargar, líneas ortogonales de ELK que esquivan tablas; al arrastrar una tabla, re-ruteo manhattan en vivo.
 - Notación de cardinalidad de un símbolo por extremo (estilo dbdiagram): pata de gallo en el lado "muchos"; en el lado "uno", barra (`│`) si la FK es `not null` o círculo (`○`) si es nullable.
 - Iconos PK / FK, badge `NN`.
+- **Color de encabezado interactivo**: clic en el encabezado de una tabla → menú para elegir o quitar color; se guarda solo en el bloque DBML.
+
 - Pan (arrastrar vacío), zoom (rueda), botón de ajustar, lienzo redimensionable.
 - Tema integrado con las variables de Obsidian (claro/oscuro automático).
 
@@ -43,6 +45,7 @@ Ref: contrato.id_cliente > cliente.id_cliente
 - `Table nombre { ... }` (y forma corta `nombre { ... }`).
 - Columnas: `nombre tipo [pk, not null, note: '...', ref: > otra.col]`.
 - Relaciones: línea `Ref: a.col > b.col`, inline `ref: > b.col`, o forma directa `a.col <> b.col`.
+- Color de encabezado por tabla: `Table nombre [headercolor: #2E7D32] { ... }` (el texto se ajusta a blanco u oscuro automáticamente).
 - Operadores de cardinalidad: `>` (muchos→uno), `<` (uno→muchos), `<>` (muchos↔muchos), `-` (uno↔uno).
 - Directiva opcional `// height: N` (alto del lienzo en px).
 - Comentarios `//`.
