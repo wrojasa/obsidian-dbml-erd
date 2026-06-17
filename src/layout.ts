@@ -1,6 +1,11 @@
 // Layout con elkjs: posiciona tablas (layered) y rutea aristas ortogonalmente
 // conectándolas a puertos ubicados en la fila de cada columna.
 import ELK from "elkjs/lib/elk.bundled.js";
+import type {
+  ElkNode,
+  ElkPort,
+  ElkExtendedEdge,
+} from "elkjs/lib/elk-api";
 import type { Model } from "./parser";
 
 export const ROW_H = 28;
@@ -37,9 +42,9 @@ function colRowY(model: Model, table: string, col: string): number {
 }
 
 export async function computeLayout(model: Model): Promise<LayoutResult> {
-  const children = model.tables.map((t) => {
+  const children: ElkNode[] = model.tables.map((t) => {
     const h = tableHeight(t.cols.length);
-    const ports: any[] = [];
+    const ports: ElkPort[] = [];
     model.refs.forEach((r, i) => {
       if (r.from === t.name) {
         const y = colRowY(model, t.name, r.fromCol);
@@ -57,18 +62,18 @@ export async function computeLayout(model: Model): Promise<LayoutResult> {
       width: NODE_W,
       height: h,
       ports,
-      properties: { "org.eclipse.elk.portConstraints": "FIXED_POS" },
+      layoutOptions: { "elk.portConstraints": "FIXED_POS" },
     };
   });
 
   // source desde EAST, target hacia WEST (caso jerárquico común)
-  const edges = model.refs.map((r, i) => ({
+  const edges: ElkExtendedEdge[] = model.refs.map((r, i) => ({
     id: "e" + i,
     sources: [`s${i}_e`],
     targets: [`t${i}_w`],
   }));
 
-  const graph = {
+  const graph: ElkNode = {
     id: "root",
     layoutOptions: {
       "elk.algorithm": "layered",
@@ -82,27 +87,32 @@ export async function computeLayout(model: Model): Promise<LayoutResult> {
     edges,
   };
 
-  const res: any = await elk.layout(graph as any);
+  const res = await elk.layout(graph);
   const nodes: Record<string, NodePos> = {};
-  for (const n of res.children) {
-    nodes[n.id] = { x: n.x, y: n.y, w: n.width, h: n.height };
+  for (const n of res.children ?? []) {
+    nodes[n.id] = {
+      x: n.x ?? 0,
+      y: n.y ?? 0,
+      w: n.width ?? 0,
+      h: n.height ?? 0,
+    };
   }
-  const edgePaths: EdgePath[] = res.edges.map((e: any) => {
-    const sec = e.sections?.[0];
+  const edgePaths: EdgePath[] = (res.edges ?? []).map((e) => {
+    const sec = (e as ElkExtendedEdge).sections?.[0];
     if (!sec) return { pts: [] };
-    const pts = [sec.startPoint, ...(sec.bendPoints || []), sec.endPoint];
+    const pts = [sec.startPoint, ...(sec.bendPoints ?? []), sec.endPoint];
     return { pts };
   });
   return { nodes, edges: edgePaths };
 }
 
-function port(id: string, x: number, y: number, side: string) {
+function port(id: string, x: number, y: number, side: string): ElkPort {
   return {
     id,
     x,
     y,
     width: 1,
     height: 1,
-    properties: { "org.eclipse.elk.port.side": side },
+    layoutOptions: { "elk.port.side": side },
   };
 }

@@ -41,8 +41,10 @@ export default class DbmlErdPlugin extends Plugin {
     let model: Model;
     try {
       model = parseDBML(source);
-    } catch (e: any) {
-      wrap.setText("Error de parseo: " + e.message);
+    } catch (e) {
+      wrap.setText(
+        "Error de parseo: " + (e instanceof Error ? e.message : String(e))
+      );
       return;
     }
     if (model.tables.length === 0) {
@@ -57,8 +59,10 @@ export default class DbmlErdPlugin extends Plugin {
       ctx.addChild(
         new Diagram(wrap, model, layout, { height, plugin: this, ctx, el })
       );
-    } catch (e: any) {
-      wrap.setText("Error de layout: " + e.message);
+    } catch (e) {
+      wrap.setText(
+        "Error de layout: " + (e instanceof Error ? e.message : String(e))
+      );
     }
   }
 }
@@ -98,11 +102,11 @@ class Diagram extends MarkdownRenderChild {
 
     const host = parent.createDiv({ cls: "dbml-erd-canvas" });
     if (opts?.height) host.style.height = opts.height + "px";
-    this.svg = document.createElementNS(NS, "svg");
+    this.svg = activeDocument.createElementNS(NS, "svg");
     this.svg.classList.add("dbml-erd-svg");
-    this.vp = document.createElementNS(NS, "g") as SVGGElement;
-    this.edgeLayer = document.createElementNS(NS, "g") as SVGGElement;
-    this.nodeLayer = document.createElementNS(NS, "g") as SVGGElement;
+    this.vp = activeDocument.createElementNS(NS, "g");
+    this.edgeLayer = activeDocument.createElementNS(NS, "g");
+    this.nodeLayer = activeDocument.createElementNS(NS, "g");
     this.vp.appendChild(this.edgeLayer);
     this.vp.appendChild(this.nodeLayer);
     this.svg.appendChild(this.vp);
@@ -119,7 +123,7 @@ class Diagram extends MarkdownRenderChild {
     this.bindPanZoom(host);
     this.applyView();
     // ajustar tras montar (necesita medidas del host)
-    requestAnimationFrame(() => this.fit());
+    activeWindow.requestAnimationFrame(() => this.fit());
   }
 
   private btn(bar: HTMLElement, label: string, cb: () => void) {
@@ -207,7 +211,7 @@ class Diagram extends MarkdownRenderChild {
     kind: "many" | "one",
     optional = false
   ) {
-    const g = document.createElementNS(NS, "g");
+    const g = activeDocument.createElementNS(NS, "g");
     const dir = side === "E" ? 1 : -1;
     if (kind === "many") {
       // pata de gallo (crow's foot): el esquema no conoce el mínimo, sin marca extra
@@ -224,7 +228,7 @@ class Diagram extends MarkdownRenderChild {
     return g;
   }
   private line(x1: number, y1: number, x2: number, y2: number) {
-    const l = document.createElementNS(NS, "line");
+    const l = activeDocument.createElementNS(NS, "line");
     l.setAttribute("x1", "" + x1);
     l.setAttribute("y1", "" + y1);
     l.setAttribute("x2", "" + x2);
@@ -233,7 +237,7 @@ class Diagram extends MarkdownRenderChild {
     return l;
   }
   private circle(cx: number, cy: number, r: number) {
-    const c = document.createElementNS(NS, "circle");
+    const c = activeDocument.createElementNS(NS, "circle");
     c.setAttribute("cx", "" + cx);
     c.setAttribute("cy", "" + cy);
     c.setAttribute("r", "" + r);
@@ -284,7 +288,7 @@ class Diagram extends MarkdownRenderChild {
   }
 
   private drawEdge(r: Ref, pts: Pt[]) {
-    const path = document.createElementNS(NS, "path");
+    const path = activeDocument.createElementNS(NS, "path");
     path.setAttribute("d", this.roundedPath(pts));
     path.classList.add("dbml-edge");
     this.edgeLayer.appendChild(path);
@@ -306,7 +310,7 @@ class Diagram extends MarkdownRenderChild {
     this.model.tables.forEach((t) => {
       const P = this.pos[t.name];
       if (!P) return;
-      const g = document.createElementNS(NS, "g");
+      const g = activeDocument.createElementNS(NS, "g");
       g.classList.add("dbml-node");
       g.setAttribute("transform", `translate(${P.x},${P.y})`);
       const h = HEAD_H + t.cols.length * ROW_H;
@@ -396,7 +400,7 @@ class Diagram extends MarkdownRenderChild {
   }
 
   private rect(x: number, y: number, w: number, h: number, cls: string) {
-    const r = document.createElementNS(NS, "rect");
+    const r = activeDocument.createElementNS(NS, "rect");
     r.setAttribute("x", "" + x);
     r.setAttribute("y", "" + y);
     r.setAttribute("width", "" + w);
@@ -405,7 +409,7 @@ class Diagram extends MarkdownRenderChild {
     return r;
   }
   private text(x: number, y: number, str: string, cls: string) {
-    const t = document.createElementNS(NS, "text");
+    const t = activeDocument.createElementNS(NS, "text");
     t.setAttribute("x", "" + x);
     t.setAttribute("y", "" + y);
     cls.split(" ").forEach((c) => c && t.classList.add(c));
@@ -480,12 +484,12 @@ class Diagram extends MarkdownRenderChild {
   private pickColor(name: string) {
     const current =
       this.model.tables.find((t) => t.name === name)?.headerColor || "";
-    const input = document.createElement("input");
+    const input = activeDocument.createElement("input");
     input.type = "color";
     input.value = /^#[0-9a-fA-F]{6}$/.test(current) ? current : "#5c7fa3";
     input.style.position = "fixed";
     input.style.left = "-9999px";
-    document.body.appendChild(input);
+    activeDocument.body.appendChild(input);
     input.addEventListener("change", () => {
       this.setHeaderColor(name, input.value);
       input.remove();

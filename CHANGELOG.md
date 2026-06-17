@@ -2,6 +2,13 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.7] - 2026-06-17
+
+### Cambiado
+
+- Limpieza para la revisión de Obsidian: tipos de ELK sin `any` (`ElkNode`/`ElkPort`/`ElkExtendedEdge`), `document`/`requestAnimationFrame` reemplazados por `activeDocument`/`activeWindow` (compatibilidad con ventanas emergentes), aserciones de tipo innecesarias removidas, nombre del plugin sin mayúsculas totales.
+- Workflow de release con atestación de procedencia de artefactos (`attest-build-provenance`).
+
 ## [0.1.6] - 2026-06-17
 
 ### Agregado
