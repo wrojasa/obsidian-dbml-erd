@@ -118,3 +118,9 @@
 .dbml-erd-toolbar button:hover {
   border-color: var(--interactive-accent);
 }
+
+/* input de color oculto fuera de pantalla (estilos estáticos en CSS, no por JS) */
+.dbml-color-input {
+  position: fixed;
+  left: -9999px;
+}

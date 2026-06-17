@@ -2,6 +2,12 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.8] - 2026-06-17
+
+### Corregido
+
+- Los estilos estáticos del input de color (`position`, `left`) se movieron a la clase CSS `.dbml-color-input`, resolviendo el error `obsidianmd/no-static-styles-assignment` de la revisión de Obsidian.
+
 ## [0.1.7] - 2026-06-17
 
 ### Cambiado

@@ -487,8 +487,7 @@ class Diagram extends MarkdownRenderChild {
     const input = activeDocument.createElement("input");
     input.type = "color";
     input.value = /^#[0-9a-fA-F]{6}$/.test(current) ? current : "#5c7fa3";
-    input.style.position = "fixed";
-    input.style.left = "-9999px";
+    input.classList.add("dbml-color-input");
     activeDocument.body.appendChild(input);
     input.addEventListener("change", () => {
       this.setHeaderColor(name, input.value);
