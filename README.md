@@ -2,7 +2,7 @@
 
 Plugin de Obsidian que renderiza bloques de código ` ```dbml ` como diagramas entidad-relación interactivos, con **ruteo ortogonal estilo dbdiagram.io** (líneas en ángulo recto que esquivan tablas), notación crow's foot y tablas arrastrables.
 
-/ Autor: **Wilmar Rojas Av.** · Licencia: MIT
+/ Autor: **Wilmar Rojas Avendaño** · Licencia: MIT
 
 ## Características
 
@@ -81,4 +81,4 @@ El workflow compila y adjunta `main.js`, `manifest.json` y `styles.css` al relea
 
 ## Licencia
 
-MIT © 2026 Wilmar Rojas Av.
+MIT © 2026 Wilmar Rojas Avendaño

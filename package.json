@@ -15,7 +15,7 @@
     "dbdiagram",
     "database"
   ],
-  "author": "Wilmar Rojas Av.",
+  "author": "Wilmar Rojas Avendaño",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^25.9.3",

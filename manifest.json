@@ -4,6 +4,6 @@
   "version": "0.1.7",
   "minAppVersion": "1.4.0",
   "description": "Renderiza bloques de codigo dbml como diagramas entidad-relacion con ruteo ortogonal estilo dbdiagram.io.",
-  "author": "Wilmar Rojas Av.",
+  "author": "Wilmar Rojas Avendaño",
   "isDesktopOnly": false
 }
