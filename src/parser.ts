@@ -443,3 +443,8 @@ export function parseView(
     ? { x: parseFloat(m[1]), y: parseFloat(m[2]), k: parseFloat(m[3]) }
     : null;
 }
+
+export function parseSize(src: string): { w: number; h: number } | null {
+  const m = src.match(/\/\/\s*@size\s+(\d+)\s+(\d+)/);
+  return m ? { w: parseInt(m[1], 10), h: parseInt(m[2], 10) } : null;
+}

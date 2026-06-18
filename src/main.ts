@@ -18,6 +18,7 @@ import {
   setColumnTypeInBlock,
   parsePositions,
   parseView,
+  parseSize,
 } from "./parser";
 import {
   computeLayout,
@@ -70,6 +71,7 @@ export default class DbmlErdPlugin extends Plugin {
       const height = hMatch ? parseInt(hMatch[1], 10) : undefined;
       const savedPos = parsePositions(source);
       const view = parseView(source);
+      const size = parseSize(source);
       ctx.addChild(
         new Diagram(wrap, model, layout, {
           height,
@@ -78,6 +80,7 @@ export default class DbmlErdPlugin extends Plugin {
           el,
           savedPos,
           view: view ?? undefined,
+          size: size ?? undefined,
         })
       );
     } catch (e) {
@@ -95,6 +98,8 @@ class Diagram extends MarkdownRenderChild {
   private view = { x: 30, y: 30, k: 1 };
   private movedTables = new Set<string>();
   private saveTimer = 0;
+  private hostEl?: HTMLElement;
+  private lastSize = "";
   private colorInput?: HTMLInputElement;
   private plugin?: DbmlErdPlugin;
   private ctx?: MarkdownPostProcessorContext;
@@ -115,6 +120,7 @@ class Diagram extends MarkdownRenderChild {
       el?: HTMLElement;
       savedPos?: Record<string, { x: number; y: number }>;
       view?: { x: number; y: number; k: number };
+      size?: { w: number; h: number };
     }
   ) {
     super(parent);
@@ -138,8 +144,15 @@ class Diagram extends MarkdownRenderChild {
     if (opts?.view) this.view = { ...opts.view };
 
     const host = parent.createDiv({ cls: "dbml-erd-canvas" });
+    this.hostEl = host;
     if (opts?.height)
       host.style.setProperty("--dbml-erd-height", opts.height + "px");
+    // tamaño guardado (override del default CSS / --dbml-erd-height)
+    if (opts?.size) {
+      host.style.width = opts.size.w + "px";
+      host.style.height = opts.size.h + "px";
+      this.lastSize = `${opts.size.w} ${opts.size.h}`;
+    }
     this.svg = activeDocument.createElementNS(NS, "svg");
     this.svg.classList.add("dbml-erd-svg");
     this.vp = activeDocument.createElementNS(NS, "g");
@@ -159,6 +172,7 @@ class Diagram extends MarkdownRenderChild {
     this.drawNodes();
     this.redrawEdges();
     this.bindPanZoom(host);
+    this.bindResize(host);
     this.applyView();
     // si no hay vista guardada, encuadrar tras montar (necesita medidas del host)
     if (!opts?.view) activeWindow.requestAnimationFrame(() => this.fit());
@@ -730,7 +744,7 @@ class Diagram extends MarkdownRenderChild {
       const [open, close] = range;
       const body = lines
         .slice(open + 1, close)
-        .filter((l) => !/^\s*\/\/\s*@(pos|view)\b/.test(l));
+        .filter((l) => !/^\s*\/\/\s*@(pos|view|size)\b/.test(l));
       // solo persiste posición de tablas que el usuario movió (las demás
       // siguen con auto-layout); la vista siempre se persiste.
       const posLines = this.model.tables
@@ -742,11 +756,19 @@ class Diagram extends MarkdownRenderChild {
       const viewLine = `// @view ${Math.round(this.view.x)} ${Math.round(
         this.view.y
       )} ${this.view.k.toFixed(3)}`;
+      // tamaño solo si el usuario lo fijó (px inline); ancho 100% no se persiste.
+      const sw = this.readPx(this.hostEl?.style.width);
+      const sh = this.readPx(this.hostEl?.style.height);
+      const sizeLines =
+        Number.isFinite(sw) && Number.isFinite(sh)
+          ? [`// @size ${sw} ${sh}`]
+          : [];
       return [
         ...lines.slice(0, open + 1),
         ...body,
         ...posLines,
         viewLine,
+        ...sizeLines,
         ...lines.slice(close),
       ].join("\n");
     });
@@ -801,6 +823,27 @@ class Diagram extends MarkdownRenderChild {
       return done ? lines.join("\n") : data;
     });
     if (!done) new Notice(`DBML ERD: no se encontró la tabla "${name}".`);
+  }
+
+  // lee px inline explícitos; ignora "", "100%", "auto", etc.
+  private readPx(v?: string): number {
+    const m = /^(\d+)px$/.exec(v ?? "");
+    return m ? parseInt(m[1], 10) : NaN;
+  }
+
+  // persiste el tamaño del lienzo cuando el usuario lo redimensiona (handle CSS).
+  private bindResize(host: HTMLElement) {
+    const ro = new ResizeObserver(() => {
+      const w = this.readPx(host.style.width);
+      const h = this.readPx(host.style.height);
+      if (!Number.isFinite(w) || !Number.isFinite(h)) return; // sin px inline aún
+      const key = `${w} ${h}`;
+      if (key === this.lastSize) return; // sin cambio real → evita bucle/carga
+      this.lastSize = key;
+      this.scheduleSaveLayout();
+    });
+    ro.observe(host);
+    this.register(() => ro.disconnect());
   }
 
   private bindPanZoom(host: HTMLElement) {

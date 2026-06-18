@@ -6,7 +6,7 @@
   position: relative;
   width: 100%;
   height: var(--dbml-erd-height, 480px);
-  resize: vertical;
+  resize: both;
   touch-action: none;
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
