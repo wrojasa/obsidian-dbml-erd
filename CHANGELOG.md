@@ -2,6 +2,12 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.13] - 2026-06-19
+
+### Cambiado
+
+- **Imán ortogonal al arrastrar tiradores**: al mover un punto de quiebre de una conexión, ahora se ajusta automáticamente al codo en "L" más cercano respecto a sus vecinos (uno de los ejes hereda la X del punto previo y el otro la Y del siguiente, o viceversa, según cuál quede más cerca). Mantiene los tramos perpendiculares estilo dbdiagram.io sin tener que alinear a mano. Los extremos se reanclan a los puertos de columna actuales con la misma lógica que el ruteo guardado.
+
 ## [0.1.12] - 2026-06-19
 
 ### Agregado
