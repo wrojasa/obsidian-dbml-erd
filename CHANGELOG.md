@@ -2,6 +2,12 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.14] - 2026-06-19
+
+### Corregido
+
+- **Los quiebres ahora se mueven con las tablas**: antes, al crear un punto de quiebre en una conexión, esos puntos quedaban fijos en coordenadas absolutas; al mover una tabla solo se reanclaban los extremos y la ruta se veía rota/congelada. Ahora los waypoints intermedios se guardan respecto a un *frame base* (las anclas de los dos extremos cuando se autorizó la ruta) y se estiran afín-mente (interpolación independiente en X e Y) cuando se mueve cualquiera de las dos tablas, deformando toda la conexión de forma natural. Al empezar a arrastrar un tirador la ruta se "rebakea" al frame actual para que el arrastre y el imán ortogonal trabajen en las mismas coordenadas que se ven. Las rutas `@edge` se serializan ya mapeadas al frame actual, así coinciden con `@pos` y al recargar el mapeo arranca en identidad.
+
 ## [0.1.13] - 2026-06-19
 
 ### Cambiado

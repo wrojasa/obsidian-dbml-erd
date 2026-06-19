@@ -99,6 +99,12 @@ class Diagram extends MarkdownRenderChild {
   private pos: Record<string, NodePos>;
   private elkEdges: Pt[][]; // ruta ELK original por ref
   private customEdges: Record<string, Pt[]> = {}; // waypoints intermedios por ref
+  // frame de anclas (extremos + lados) con el que se autorizaron los waypoints
+  // de cada ref; sirve para estirarlos afín-mente al mover tablas (base->actual).
+  private customEdgeBase: Record<
+    string,
+    { ax: number; ay: number; bx: number; by: number; aR: boolean; bR: boolean }
+  > = {};
   private selectedEdge?: string; // ref con handles visibles
   private view = { x: 30, y: 30, k: 1 };
   private movedTables = new Set<string>();
@@ -428,19 +434,77 @@ class Diagram extends MarkdownRenderChild {
     return pts && pts.length >= 2 ? pts : null;
   }
 
-  // arma la polilínea con los waypoints intermedios guardados, recalculando los
-  // dos extremos contra los puertos actuales (para que sigan pegados al mover).
+  // anclas actuales de los extremos contra los puertos de columna. Si se pasa un
+  // frame base, conserva sus lados (estable al mover); si no, los deduce de la
+  // posición de los waypoints respecto al centro de cada tabla.
+  private currentAnchors(
+    r: Ref,
+    mid: Pt[],
+    base?: { aR: boolean; bR: boolean }
+  ): { ax: number; ay: number; bx: number; by: number; aR: boolean; bR: boolean } | null {
+    const A = this.pos[r.from];
+    const B = this.pos[r.to];
+    if (!A || !B) return null;
+    const ay = A.y + this.colRowY(r.from, r.fromCol);
+    const by = B.y + this.colRowY(r.to, r.toCol);
+    let aR: boolean, bR: boolean;
+    if (base) {
+      aR = base.aR;
+      bR = base.bR;
+    } else if (mid.length) {
+      aR = mid[0].x >= A.x + NODE_W / 2;
+      bR = mid[mid.length - 1].x >= B.x + NODE_W / 2;
+    } else {
+      aR = B.x + NODE_W / 2 >= A.x + NODE_W / 2;
+      bR = !aR;
+    }
+    const ax = aR ? A.x + NODE_W : A.x;
+    const bx = bR ? B.x + NODE_W : B.x;
+    return { ax, ay, bx, by, aR, bR };
+  }
+
+  // mapea un valor de un eje desde el span base [ba,bb] al actual [ca,cb]
+  // (afín). Si el span base es ~0 (extremos alineados) preserva el offset.
+  private lerpAxis(v: number, ba: number, bb: number, ca: number, cb: number) {
+    const span = bb - ba;
+    if (Math.abs(span) < 1e-6) return ca + (v - ba);
+    return ca + ((v - ba) / span) * (cb - ca);
+  }
+
+  // waypoints intermedios de una ref transformados del frame base al actual,
+  // de modo que se estiren al mover cualquiera de las dos tablas.
+  private mappedInterior(r: Ref, key: string): Pt[] {
+    const mid = this.customEdges[key];
+    if (!mid || !mid.length) return [];
+    const base = this.customEdgeBase[key];
+    const cur = this.currentAnchors(r, mid, base);
+    if (!base || !cur) return mid.map((p) => ({ ...p }));
+    return mid.map((p) => ({
+      x: this.lerpAxis(p.x, base.ax, base.bx, cur.ax, cur.bx),
+      y: this.lerpAxis(p.y, base.ay, base.by, cur.ay, cur.by),
+    }));
+  }
+
+  // arma la polilínea: extremos reanclados a los puertos actuales + waypoints
+  // intermedios estirados afín-mente (base->actual). Captura el frame base la
+  // primera vez (p.ej. @edge cargado), cuando aún coincide con la posición real.
   private routeWithWaypoints(r: Ref, mid: Pt[]): Pt[] {
     const A = this.pos[r.from];
     const B = this.pos[r.to];
     if (!A || !B) return mid.slice();
-    const ay = A.y + this.colRowY(r.from, r.fromCol);
-    const by = B.y + this.colRowY(r.to, r.toCol);
-    const aRight = mid[0].x >= A.x + NODE_W / 2;
-    const bRight = mid[mid.length - 1].x >= B.x + NODE_W / 2;
-    const ax = aRight ? A.x + NODE_W : A.x;
-    const bx = bRight ? B.x + NODE_W : B.x;
-    return [{ x: ax, y: ay }, ...mid.map((p) => ({ ...p })), { x: bx, y: by }];
+    const key = this.edgeKey(r);
+    if (!this.customEdgeBase[key]) {
+      const cap = this.currentAnchors(r, mid);
+      if (cap) this.customEdgeBase[key] = cap;
+    }
+    const cur = this.currentAnchors(r, mid, this.customEdgeBase[key]);
+    if (!cur) return mid.slice();
+    const inner = this.mappedInterior(r, key);
+    return [
+      { x: cur.ax, y: cur.ay },
+      ...inner,
+      { x: cur.bx, y: cur.by },
+    ];
   }
 
   // localiza la columna FK (lado muchos) y si es nullable -> el lado uno es opcional
@@ -560,16 +624,25 @@ class Diagram extends MarkdownRenderChild {
 
   private resetEdge(key: string) {
     delete this.customEdges[key];
+    delete this.customEdgeBase[key];
     this.refresh();
     this.scheduleSaveLayout();
   }
 
-  // copia los waypoints intermedios actuales como base editable
+  // prepara los waypoints de una ref para editarlos a mano "en frame actual":
+  // si no existían, los siembra de la ruta visible; si existían, colapsa la
+  // transformación base->actual a coordenadas absolutas. En ambos casos deja el
+  // frame base = actual (mapeo identidad), de modo que el arrastre y el imán
+  // ortogonal trabajen en las mismas coordenadas que se ven en pantalla.
   private seedCustom(r: Ref, i: number, key: string): Pt[] {
     if (!this.customEdges[key]) {
       const full = this.edgePts(r, i) ?? [];
       this.customEdges[key] = full.slice(1, -1).map((p) => ({ ...p }));
+    } else {
+      this.customEdges[key] = this.mappedInterior(r, key);
     }
+    const cap = this.currentAnchors(r, this.customEdges[key]);
+    if (cap) this.customEdgeBase[key] = cap;
     return this.customEdges[key];
   }
 
@@ -655,19 +728,15 @@ class Diagram extends MarkdownRenderChild {
           x: ox + (e.clientX - sx) / this.view.k,
           y: oy + (e.clientY - sy) / this.view.k,
         };
-        // snap a ortogonal: forma L con vecinos (un eje de cada)
-        const A = this.pos[r.from];
-        const B = this.pos[r.to];
-        if (A && B) {
-          const ay = A.y + this.colRowY(r.from, r.fromCol);
-          const by = B.y + this.colRowY(r.to, r.toCol);
-          const aRight = mids[0].x >= A.x + NODE_W / 2;
-          const bRight = mids[mids.length - 1].x >= B.x + NODE_W / 2;
-          const ax = aRight ? A.x + NODE_W : A.x;
-          const bx = bRight ? B.x + NODE_W : B.x;
-          const prevPt = wp === 0 ? { x: ax, y: ay } : mids[wp - 1];
+        // snap a ortogonal: forma L con vecinos (un eje de cada). Durante el
+        // arrastre seedCustom dejó base = actual, así que estos midpoints están
+        // en el mismo frame que las anclas.
+        const anc = this.currentAnchors(r, mids);
+        if (anc) {
+          const prevPt =
+            wp === 0 ? { x: anc.ax, y: anc.ay } : mids[wp - 1];
           const nextPt =
-            wp === mids.length - 1 ? { x: bx, y: by } : mids[wp + 1];
+            wp === mids.length - 1 ? { x: anc.bx, y: anc.by } : mids[wp + 1];
           const opt1 = { x: prevPt.x, y: nextPt.y };
           const opt2 = { x: nextPt.x, y: prevPt.y };
           const d1 = Math.hypot(mids[wp].x - opt1.x, mids[wp].y - opt1.y);
@@ -1109,13 +1178,17 @@ class Diagram extends MarkdownRenderChild {
           : [];
       // rutas de aristas editadas a mano (solo waypoints intermedios)
       const edgeLines = this.model.refs
-        .map((r) => ({ r, pts: this.customEdges[this.edgeKey(r)] }))
-        .filter((x) => x.pts && x.pts.length)
-        .map(
-          ({ r, pts }) =>
+        .map((r) => ({ r, key: this.edgeKey(r) }))
+        .filter((x) => this.customEdges[x.key]?.length)
+        // se guardan en frame actual (mapeados) para que coincidan con @pos; al
+        // recargar el frame base se recaptura y el mapeo arranca en identidad.
+        .map(({ r, key }) => {
+          const pts = this.mappedInterior(r, key);
+          return (
             `// @edge ${r.from} ${r.fromCol} ${r.to} ${r.toCol} ` +
             pts.map((p) => `${Math.round(p.x)} ${Math.round(p.y)}`).join(" ")
-        );
+          );
+        });
       return [
         ...lines.slice(0, open + 1),
         ...body,
