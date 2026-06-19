@@ -2,6 +2,12 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.11] - 2026-06-19
+
+### Corregido
+
+- **Menús de edición en móvil (Android)**: el menú emergente de "Renombrar tabla/columna" y "Elegir color" aparecía y se cerraba al instante en táctil. El `pointerup` que abría el menú seguía propagándose hasta `document`, donde el menú de Obsidian registra su listener de auto-cierre. Ahora se detiene la propagación (`stopPropagation`/`preventDefault`) y la apertura se difiere un tick, de modo que el menú permanece abierto.
+
 ## [0.1.10] - 2026-06-18
 
 ### Agregado
