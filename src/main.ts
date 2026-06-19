@@ -655,6 +655,25 @@ class Diagram extends MarkdownRenderChild {
           x: ox + (e.clientX - sx) / this.view.k,
           y: oy + (e.clientY - sy) / this.view.k,
         };
+        // snap a ortogonal: forma L con vecinos (un eje de cada)
+        const A = this.pos[r.from];
+        const B = this.pos[r.to];
+        if (A && B) {
+          const ay = A.y + this.colRowY(r.from, r.fromCol);
+          const by = B.y + this.colRowY(r.to, r.toCol);
+          const aRight = mids[0].x >= A.x + NODE_W / 2;
+          const bRight = mids[mids.length - 1].x >= B.x + NODE_W / 2;
+          const ax = aRight ? A.x + NODE_W : A.x;
+          const bx = bRight ? B.x + NODE_W : B.x;
+          const prevPt = wp === 0 ? { x: ax, y: ay } : mids[wp - 1];
+          const nextPt =
+            wp === mids.length - 1 ? { x: bx, y: by } : mids[wp + 1];
+          const opt1 = { x: prevPt.x, y: nextPt.y };
+          const opt2 = { x: nextPt.x, y: prevPt.y };
+          const d1 = Math.hypot(mids[wp].x - opt1.x, mids[wp].y - opt1.y);
+          const d2 = Math.hypot(mids[wp].x - opt2.x, mids[wp].y - opt2.y);
+          mids[wp] = d1 < d2 ? opt1 : opt2;
+        }
         el.setAttribute("cx", String(mids[wp].x));
         el.setAttribute("cy", String(mids[wp].y));
         this.redrawEdges(); // solo líneas; handles se reconstruyen al soltar
