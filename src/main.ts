@@ -19,6 +19,7 @@ import {
   parsePositions,
   parseView,
   parseSize,
+  parseEdges,
 } from "./parser";
 import {
   computeLayout,
@@ -72,6 +73,7 @@ export default class DbmlErdPlugin extends Plugin {
       const savedPos = parsePositions(source);
       const view = parseView(source);
       const size = parseSize(source);
+      const savedEdges = parseEdges(source);
       ctx.addChild(
         new Diagram(wrap, model, layout, {
           height,
@@ -81,6 +83,7 @@ export default class DbmlErdPlugin extends Plugin {
           savedPos,
           view: view ?? undefined,
           size: size ?? undefined,
+          savedEdges,
         })
       );
     } catch (e) {
@@ -95,6 +98,8 @@ class Diagram extends MarkdownRenderChild {
   private model: Model;
   private pos: Record<string, NodePos>;
   private elkEdges: Pt[][]; // ruta ELK original por ref
+  private customEdges: Record<string, Pt[]> = {}; // waypoints intermedios por ref
+  private selectedEdge?: string; // ref con handles visibles
   private view = { x: 30, y: 30, k: 1 };
   private movedTables = new Set<string>();
   private saveTimer = 0;
@@ -108,6 +113,7 @@ class Diagram extends MarkdownRenderChild {
   private vp: SVGGElement;
   private edgeLayer: SVGGElement;
   private nodeLayer: SVGGElement;
+  private handleLayer: SVGGElement;
 
   constructor(
     parent: HTMLElement,
@@ -121,6 +127,7 @@ class Diagram extends MarkdownRenderChild {
       savedPos?: Record<string, { x: number; y: number }>;
       view?: { x: number; y: number; k: number };
       size?: { w: number; h: number };
+      savedEdges?: Record<string, { x: number; y: number }[]>;
     }
   ) {
     super(parent);
@@ -141,6 +148,15 @@ class Diagram extends MarkdownRenderChild {
         }
       }
     }
+    // rutas de aristas editadas a mano: solo se conservan las que aún
+    // corresponden a una relación existente (descarta @edge huérfanos).
+    if (opts?.savedEdges) {
+      const valid = new Set(this.model.refs.map((r) => this.edgeKey(r)));
+      for (const [k, pts] of Object.entries(opts.savedEdges)) {
+        if (valid.has(k) && pts.length)
+          this.customEdges[k] = pts.map((p) => ({ ...p }));
+      }
+    }
     if (opts?.view) this.view = { ...opts.view };
 
     const host = parent.createDiv({ cls: "dbml-erd-canvas" });
@@ -158,8 +174,10 @@ class Diagram extends MarkdownRenderChild {
     this.vp = activeDocument.createElementNS(NS, "g");
     this.edgeLayer = activeDocument.createElementNS(NS, "g");
     this.nodeLayer = activeDocument.createElementNS(NS, "g");
+    this.handleLayer = activeDocument.createElementNS(NS, "g");
     this.vp.appendChild(this.edgeLayer);
     this.vp.appendChild(this.nodeLayer);
+    this.vp.appendChild(this.handleLayer); // handles por encima de todo
     this.svg.appendChild(this.vp);
     host.appendChild(this.svg);
 
@@ -198,7 +216,58 @@ class Diagram extends MarkdownRenderChild {
     return HEAD_H + idx * ROW_H + ROW_H / 2;
   }
 
-  // ruteo manhattan (para drag): Z entre puertos de columna
+  private edgeKey(r: Ref): string {
+    return `${r.from}.${r.fromCol}->${r.to}.${r.toCol}`;
+  }
+
+  // rectángulos de tabla (obstáculos) excluyendo las indicadas
+  private tableRects(
+    ignore: string[]
+  ): { x: number; y: number; w: number; h: number }[] {
+    const ig = new Set(ignore);
+    const out: { x: number; y: number; w: number; h: number }[] = [];
+    for (const t of this.model.tables) {
+      if (ig.has(t.name)) continue;
+      const p = this.pos[t.name];
+      if (!p) continue;
+      out.push({
+        x: p.x,
+        y: p.y,
+        w: p.w || NODE_W,
+        h: p.h || HEAD_H + t.cols.length * ROW_H,
+      });
+    }
+    return out;
+  }
+
+  // ¿el segmento (axis-aligned) cruza algún rectángulo (con padding)?
+  private segHitsRects(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    rects: { x: number; y: number; w: number; h: number }[],
+    pad = 12
+  ): boolean {
+    const lox = Math.min(x1, x2),
+      hix = Math.max(x1, x2),
+      loy = Math.min(y1, y2),
+      hiy = Math.max(y1, y2);
+    for (const r of rects) {
+      if (
+        hix < r.x - pad ||
+        lox > r.x + r.w + pad ||
+        hiy < r.y - pad ||
+        loy > r.y + r.h + pad
+      )
+        continue;
+      return true;
+    }
+    return false;
+  }
+
+  // ruteo manhattan (para drag): Z entre puertos de columna, eligiendo un canal
+  // vertical que no atraviese otras tablas.
   private manhattan(r: Ref): { pts: Pt[]; aSide: string; bSide: string } | null {
     const A = this.pos[r.from];
     const B = this.pos[r.to];
@@ -217,9 +286,30 @@ class Diagram extends MarkdownRenderChild {
     const stub = 18;
     const ax2 = ax + (aRight ? stub : -stub);
     const bx2 = bx + (bRight ? stub : -stub);
-    // al solaparse en X ambas salen al este: el canal vertical va por fuera del
-    // borde más a la derecha (no el promedio, que cruzaría un cuerpo).
-    const midX = overlapX ? Math.max(ax2, bx2) : (ax2 + bx2) / 2;
+    // canal vertical base (como antes); luego se busca uno libre de colisiones.
+    const baseMid = overlapX ? Math.max(ax2, bx2) : (ax2 + bx2) / 2;
+    const rects = this.tableRects([r.from, r.to]);
+    // candidatos: base, stubs y bordes ±margen de cada tabla. Se prueba el más
+    // cercano a baseMid que no cruce ninguna tabla en los 3 tramos.
+    const margin = 22;
+    const cands = [baseMid, ax2, bx2];
+    for (const t of this.model.tables) {
+      const p = this.pos[t.name];
+      if (!p) continue;
+      cands.push(p.x - margin, p.x + (p.w || NODE_W) + margin);
+    }
+    cands.sort((u, v) => Math.abs(u - baseMid) - Math.abs(v - baseMid));
+    let midX = baseMid;
+    for (const c of cands) {
+      if (
+        !this.segHitsRects(ax2, ay, c, ay, rects) &&
+        !this.segHitsRects(c, ay, c, by, rects) &&
+        !this.segHitsRects(c, by, bx2, by, rects)
+      ) {
+        midX = c;
+        break;
+      }
+    }
     return {
       pts: [
         { x: ax, y: ay },
@@ -318,14 +408,39 @@ class Diagram extends MarkdownRenderChild {
     while (this.edgeLayer.firstChild)
       this.edgeLayer.removeChild(this.edgeLayer.firstChild);
     this.model.refs.forEach((r, i) => {
-      if (this.movedTables.has(r.from) || this.movedTables.has(r.to)) {
-        const m = this.manhattan(r);
-        if (m) this.drawEdge(r, m.pts);
-      } else {
-        const pts = this.elkEdges[i];
-        if (pts && pts.length >= 2) this.drawEdge(r, pts);
-      }
+      const pts = this.edgePts(r, i);
+      if (pts && pts.length >= 2) this.drawEdge(r, pts, this.edgeKey(r));
     });
+  }
+
+  // ruta actual de una arista, por prioridad:
+  // 1) waypoints manuales (reanclando extremos a los puertos actuales)
+  // 2) manhattan (si algún extremo fue movido)
+  // 3) ruta ELK original
+  private edgePts(r: Ref, i: number): Pt[] | null {
+    const custom = this.customEdges[this.edgeKey(r)];
+    if (custom && custom.length) return this.routeWithWaypoints(r, custom);
+    if (this.movedTables.has(r.from) || this.movedTables.has(r.to)) {
+      const m = this.manhattan(r);
+      return m ? m.pts : null;
+    }
+    const pts = this.elkEdges[i];
+    return pts && pts.length >= 2 ? pts : null;
+  }
+
+  // arma la polilínea con los waypoints intermedios guardados, recalculando los
+  // dos extremos contra los puertos actuales (para que sigan pegados al mover).
+  private routeWithWaypoints(r: Ref, mid: Pt[]): Pt[] {
+    const A = this.pos[r.from];
+    const B = this.pos[r.to];
+    if (!A || !B) return mid.slice();
+    const ay = A.y + this.colRowY(r.from, r.fromCol);
+    const by = B.y + this.colRowY(r.to, r.toCol);
+    const aRight = mid[0].x >= A.x + NODE_W / 2;
+    const bRight = mid[mid.length - 1].x >= B.x + NODE_W / 2;
+    const ax = aRight ? A.x + NODE_W : A.x;
+    const bx = bRight ? B.x + NODE_W : B.x;
+    return [{ x: ax, y: ay }, ...mid.map((p) => ({ ...p })), { x: bx, y: by }];
   }
 
   // localiza la columna FK (lado muchos) y si es nullable -> el lado uno es opcional
@@ -343,11 +458,20 @@ class Diagram extends MarkdownRenderChild {
     return c ? !c.nn : false; // FK nullable => opcional; si no se halla, mandatorio
   }
 
-  private drawEdge(r: Ref, pts: Pt[]) {
+  private drawEdge(r: Ref, pts: Pt[], key: string) {
+    const d = this.roundedPath(pts);
     const path = activeDocument.createElementNS(NS, "path");
-    path.setAttribute("d", this.roundedPath(pts));
+    path.setAttribute("d", d);
     path.classList.add("dbml-edge");
+    if (this.selectedEdge === key) path.classList.add("selected");
+    if (this.customEdges[key]) path.classList.add("custom");
     this.edgeLayer.appendChild(path);
+    // path "hit" invisible y ancho para tocar/arrastrar con el dedo
+    const hit = activeDocument.createElementNS(NS, "path") as SVGElement;
+    hit.setAttribute("d", d);
+    hit.classList.add("dbml-edge-hit");
+    this.edgeLayer.appendChild(hit);
+    this.enableEdgeSelect(hit, r, key);
     const s = pts[0];
     const e = pts[pts.length - 1];
     const fromMany = r.op === ">" || r.op === "<>";
@@ -359,6 +483,198 @@ class Diagram extends MarkdownRenderChild {
     this.edgeLayer.appendChild(
       this.marker(e.x, e.y, this.endpointSide(pts, "end"), toMany ? "many" : "one", opt)
     );
+  }
+
+  // ---- edición de aristas ----
+  private refresh() {
+    this.redrawEdges();
+    this.redrawHandles();
+  }
+
+  // tap en la línea: 1er toque selecciona (muestra handles); 2º abre menú.
+  private enableEdgeSelect(hit: SVGElement, r: Ref, key: string) {
+    let sx = 0,
+      sy = 0,
+      moved = false;
+    hit.addEventListener("pointerdown", (ev: PointerEvent) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      sx = ev.clientX;
+      sy = ev.clientY;
+      moved = false;
+      try {
+        hit.setPointerCapture(ev.pointerId);
+      } catch {
+        /* noop */
+      }
+      const mv = (e: PointerEvent) => {
+        if (!moved && Math.hypot(e.clientX - sx, e.clientY - sy) < 4) return;
+        moved = true;
+      };
+      const up = (e: PointerEvent) => {
+        hit.removeEventListener("pointermove", mv);
+        hit.removeEventListener("pointerup", up);
+        hit.removeEventListener("pointercancel", up);
+        try {
+          hit.releasePointerCapture(e.pointerId);
+        } catch {
+          /* noop */
+        }
+        if (moved || e.type === "pointercancel") return;
+        e.stopPropagation();
+        if (this.selectedEdge === key) {
+          const ev2 = e;
+          setTimeout(() => this.openEdgeMenu(r, key, ev2), 0);
+        } else {
+          this.selectedEdge = key;
+          this.refresh();
+        }
+      };
+      hit.addEventListener("pointermove", mv);
+      hit.addEventListener("pointerup", up);
+      hit.addEventListener("pointercancel", up);
+    });
+  }
+
+  private openEdgeMenu(r: Ref, key: string, evt: PointerEvent) {
+    const menu = new Menu();
+    if (this.customEdges[key]) {
+      menu.addItem((i) =>
+        i
+          .setTitle("Restablecer ruta")
+          .setIcon("rotate-ccw")
+          .onClick(() => this.resetEdge(key))
+      );
+    }
+    menu.addItem((i) =>
+      i
+        .setTitle("Deseleccionar")
+        .setIcon("x")
+        .onClick(() => {
+          this.selectedEdge = undefined;
+          this.refresh();
+        })
+    );
+    menu.showAtMouseEvent(evt);
+  }
+
+  private resetEdge(key: string) {
+    delete this.customEdges[key];
+    this.refresh();
+    this.scheduleSaveLayout();
+  }
+
+  // copia los waypoints intermedios actuales como base editable
+  private seedCustom(r: Ref, i: number, key: string): Pt[] {
+    if (!this.customEdges[key]) {
+      const full = this.edgePts(r, i) ?? [];
+      this.customEdges[key] = full.slice(1, -1).map((p) => ({ ...p }));
+    }
+    return this.customEdges[key];
+  }
+
+  private redrawHandles() {
+    while (this.handleLayer.firstChild)
+      this.handleLayer.removeChild(this.handleLayer.firstChild);
+    if (!this.selectedEdge) return;
+    const i = this.model.refs.findIndex(
+      (r) => this.edgeKey(r) === this.selectedEdge
+    );
+    if (i < 0) return;
+    const r = this.model.refs[i];
+    const key = this.selectedEdge;
+    const pts = this.edgePts(r, i);
+    if (!pts || pts.length < 2) return;
+    const rad = 6 / this.view.k;
+    // handle de inserción en el medio de cada segmento (hueco)
+    for (let s = 0; s < pts.length - 1; s++) {
+      const mx = (pts[s].x + pts[s + 1].x) / 2;
+      const my = (pts[s].y + pts[s + 1].y) / 2;
+      const add = this.circle(mx, my, rad * 0.7) as SVGElement;
+      add.classList.remove("dbml-marker", "dbml-marker-circle");
+      add.classList.add("dbml-edge-handle", "add");
+      this.handleLayer.appendChild(add);
+      this.enableHandleDrag(add, r, i, key, s, true);
+    }
+    // handle por cada waypoint intermedio (relleno)
+    for (let m = 1; m < pts.length - 1; m++) {
+      const h = this.circle(pts[m].x, pts[m].y, rad) as SVGElement;
+      h.classList.remove("dbml-marker", "dbml-marker-circle");
+      h.classList.add("dbml-edge-handle");
+      this.handleLayer.appendChild(h);
+      this.enableHandleDrag(h, r, i, key, m - 1, false);
+    }
+  }
+
+  // arrastra un waypoint; si isAdd, inserta uno nuevo en segIdx y lo arrastra.
+  private enableHandleDrag(
+    el: SVGElement,
+    r: Ref,
+    i: number,
+    key: string,
+    idx: number,
+    isAdd: boolean
+  ) {
+    let sx = 0,
+      sy = 0,
+      ox = 0,
+      oy = 0,
+      wp = idx,
+      started = false;
+    el.addEventListener("pointerdown", (ev: PointerEvent) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      sx = ev.clientX;
+      sy = ev.clientY;
+      started = false;
+      try {
+        el.setPointerCapture(ev.pointerId);
+      } catch {
+        /* noop */
+      }
+      const mv = (e: PointerEvent) => {
+        if (!started) {
+          if (Math.hypot(e.clientX - sx, e.clientY - sy) < 3) return;
+          started = true;
+          const mids = this.seedCustom(r, i, key);
+          if (isAdd) {
+            // punto inicial = posición actual del add-handle (medio del segmento)
+            const cx = parseFloat(el.getAttribute("cx") || "0");
+            const cy = parseFloat(el.getAttribute("cy") || "0");
+            mids.splice(idx, 0, { x: cx, y: cy });
+            wp = idx;
+          } else {
+            wp = idx;
+          }
+          ox = mids[wp].x;
+          oy = mids[wp].y;
+        }
+        const mids = this.customEdges[key];
+        if (!mids) return;
+        mids[wp] = {
+          x: ox + (e.clientX - sx) / this.view.k,
+          y: oy + (e.clientY - sy) / this.view.k,
+        };
+        el.setAttribute("cx", String(mids[wp].x));
+        el.setAttribute("cy", String(mids[wp].y));
+        this.redrawEdges(); // solo líneas; handles se reconstruyen al soltar
+      };
+      const up = (e: PointerEvent) => {
+        el.removeEventListener("pointermove", mv);
+        el.removeEventListener("pointerup", up);
+        el.removeEventListener("pointercancel", up);
+        try {
+          el.releasePointerCapture(e.pointerId);
+        } catch {
+          /* noop */
+        }
+        if (started) this.scheduleSaveLayout();
+        this.redrawHandles();
+      };
+      el.addEventListener("pointermove", mv);
+      el.addEventListener("pointerup", up);
+      el.addEventListener("pointercancel", up);
+    });
   }
 
   // ---- dibujo de nodos ----
@@ -559,6 +875,7 @@ class Diagram extends MarkdownRenderChild {
           `translate(${this.pos[name].x},${this.pos[name].y})`
         );
         this.redrawEdges();
+        if (this.selectedEdge) this.redrawHandles();
       };
       const up = (e: PointerEvent) => {
         dragging = false;
@@ -752,7 +1069,7 @@ class Diagram extends MarkdownRenderChild {
       const [open, close] = range;
       const body = lines
         .slice(open + 1, close)
-        .filter((l) => !/^\s*\/\/\s*@(pos|view|size)\b/.test(l));
+        .filter((l) => !/^\s*\/\/\s*@(pos|view|size|edge)\b/.test(l));
       // solo persiste posición de tablas que el usuario movió (las demás
       // siguen con auto-layout); la vista siempre se persiste.
       const posLines = this.model.tables
@@ -771,10 +1088,20 @@ class Diagram extends MarkdownRenderChild {
         Number.isFinite(sw) && Number.isFinite(sh)
           ? [`// @size ${sw} ${sh}`]
           : [];
+      // rutas de aristas editadas a mano (solo waypoints intermedios)
+      const edgeLines = this.model.refs
+        .map((r) => ({ r, pts: this.customEdges[this.edgeKey(r)] }))
+        .filter((x) => x.pts && x.pts.length)
+        .map(
+          ({ r, pts }) =>
+            `// @edge ${r.from} ${r.fromCol} ${r.to} ${r.toCol} ` +
+            pts.map((p) => `${Math.round(p.x)} ${Math.round(p.y)}`).join(" ")
+        );
       return [
         ...lines.slice(0, open + 1),
         ...body,
         ...posLines,
+        ...edgeLines,
         viewLine,
         ...sizeLines,
         ...lines.slice(close),
@@ -861,7 +1188,15 @@ class Diagram extends MarkdownRenderChild {
       pvx = 0,
       pvy = 0;
     this.registerDomEvent(host, "pointerdown", (e: PointerEvent) => {
-      if ((e.target as Element).closest(".dbml-node")) return;
+      const tgt = e.target as Element;
+      if (tgt.closest(".dbml-node")) return;
+      if (tgt.closest(".dbml-edge-hit") || tgt.closest(".dbml-edge-handle"))
+        return;
+      // clic en vacío: deselecciona la arista activa
+      if (this.selectedEdge) {
+        this.selectedEdge = undefined;
+        this.refresh();
+      }
       panning = true;
       host.addClass("panning");
       psx = e.clientX;
@@ -891,6 +1226,7 @@ class Diagram extends MarkdownRenderChild {
       this.view.y = my - (my - this.view.y) * f;
       this.view.k *= f;
       this.applyView();
+      this.redrawHandles();
       this.scheduleSaveLayout();
     });
   }
@@ -898,6 +1234,7 @@ class Diagram extends MarkdownRenderChild {
   private zoom(f: number) {
     this.view.k *= f;
     this.applyView();
+    this.redrawHandles();
     this.scheduleSaveLayout();
   }
   private applyView() {

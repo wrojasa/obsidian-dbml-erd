@@ -85,11 +85,42 @@
   fill: none;
   stroke: var(--text-muted);
   stroke-width: 1.5;
+  pointer-events: none;
+}
+.dbml-edge.selected {
+  stroke: var(--interactive-accent);
+  stroke-width: 2;
+}
+.dbml-edge.custom {
+  stroke-dasharray: none;
+}
+/* path invisible y ancho para tocar/arrastrar la arista (sobre todo en táctil) */
+.dbml-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+/* tiradores para doblar la arista */
+.dbml-edge-handle {
+  fill: var(--interactive-accent);
+  stroke: var(--background-primary);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  cursor: grab;
+  pointer-events: all;
+}
+.dbml-edge-handle.add {
+  fill: var(--background-primary);
+  stroke: var(--interactive-accent);
+  opacity: 0.65;
 }
 .dbml-marker {
   stroke: var(--text-muted);
   stroke-width: 1.5;
   fill: none;
+  pointer-events: none;
 }
 .dbml-marker-circle {
   fill: var(--background-primary);

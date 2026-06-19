@@ -353,6 +353,15 @@ export function renameTableInBlock(
       lines[i] = lines[i].replace(posRe, `$1${newName}$2`);
       continue; // los @pos no contienen refs reales
     }
+    if (/^\s*\/\/\s*@edge\b/.test(lines[i])) {
+      lines[i] = rewriteEdgeLine(lines[i], (f, fc, t, tc) => [
+        f === oldName ? newName : f,
+        fc,
+        t === oldName ? newName : t,
+        tc,
+      ]);
+      continue; // los @edge no contienen refs reales
+    }
     lines[i] = replaceOutsideStrings(lines[i], refRe, `${newName}.`);
   }
   return true;
@@ -386,6 +395,15 @@ export function renameColumnInBlock(
   if (!found) return false;
   const refRe = new RegExp(`\\b${esc(table)}\\.${ec}\\b`, "g");
   for (let i = start; i <= end && i < lines.length; i++) {
+    if (/^\s*\/\/\s*@edge\b/.test(lines[i])) {
+      lines[i] = rewriteEdgeLine(lines[i], (f, fc, t, tc) => [
+        f,
+        f === table && fc === oldCol ? newCol : fc,
+        t,
+        t === table && tc === oldCol ? newCol : tc,
+      ]);
+      continue;
+    }
     lines[i] = replaceOutsideStrings(lines[i], refRe, `${table}.${newCol}`);
   }
   return true;
@@ -447,4 +465,38 @@ export function parseView(
 export function parseSize(src: string): { w: number; h: number } | null {
   const m = src.match(/\/\/\s*@size\s+(\d+)\s+(\d+)/);
   return m ? { w: parseInt(m[1], 10), h: parseInt(m[2], 10) } : null;
+}
+
+// Rutas de aristas editadas a mano: // @edge FROM FCOL TO TCOL x1 y1 x2 y2 …
+// (solo los waypoints intermedios; los extremos se reanclan a los puertos).
+// Clave de salida: `FROM.FCOL->TO.TCOL`.
+export function parseEdges(
+  src: string
+): Record<string, { x: number; y: number }[]> {
+  const out: Record<string, { x: number; y: number }[]> = {};
+  const re =
+    /\/\/\s*@edge\s+"?([A-Za-z0-9_]+)"?\s+"?([A-Za-z0-9_]+)"?\s+"?([A-Za-z0-9_]+)"?\s+"?([A-Za-z0-9_]+)"?((?:\s+-?\d+(?:\.\d+)?){2,})/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    const nums = m[5].trim().split(/\s+/).map(Number);
+    const pts: { x: number; y: number }[] = [];
+    for (let i = 0; i + 1 < nums.length; i += 2)
+      pts.push({ x: nums[i], y: nums[i + 1] });
+    if (pts.length) out[`${m[1]}.${m[2]}->${m[3]}.${m[4]}`] = pts;
+  }
+  return out;
+}
+
+// Reescribe los identificadores de una línea // @edge (from/fcol/to/tcol),
+// dejando intactos los waypoints. Devuelve la línea sin cambios si no es @edge.
+function rewriteEdgeLine(
+  line: string,
+  fn: (from: string, fcol: string, to: string, tcol: string) => [string, string, string, string]
+): string {
+  const m = line.match(
+    /^(\s*\/\/\s*@edge\s+)"?([A-Za-z0-9_]+)"?(\s+)"?([A-Za-z0-9_]+)"?(\s+)"?([A-Za-z0-9_]+)"?(\s+)"?([A-Za-z0-9_]+)"?(\s.*)?$/
+  );
+  if (!m) return line;
+  const [f, fc, t, tc] = fn(m[2], m[4], m[6], m[8]);
+  return `${m[1]}${f}${m[3]}${fc}${m[5]}${t}${m[7]}${tc}${m[9] ?? ""}`;
 }

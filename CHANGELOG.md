@@ -2,6 +2,17 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.12] - 2026-06-19
+
+### Agregado
+
+- **Conexiones editables a mano**: tocá una relación para seleccionarla; aparecen tiradores (handles) en cada quiebre y en el medio de cada tramo. Arrastrá un tirador para doblar la curva o usá el del medio de un tramo para insertar un nuevo punto. La ruta se guarda como comentario `// @edge` dentro del bloque (junto a `@pos`/`@view`/`@size`) y se restaura al reabrir la nota. Tocando otra vez una relación seleccionada se abre un menú con "Restablecer ruta" (volver a automático) y "Deseleccionar".
+
+### Cambiado
+
+- **Evasión de colisiones al mover tablas**: el ruteo manual (`manhattan`) ahora elige el canal vertical más cercano que no atraviese *otras* tablas, no solo las dos conectadas. Antes una conexión podía cruzar por encima de tablas intermedias tras mover una tabla.
+- Las rutas `@edge` se actualizan al renombrar tablas o columnas, y se descartan si la relación deja de existir en el DBML.
+
 ## [0.1.11] - 2026-06-19
 
 ### Corregido
