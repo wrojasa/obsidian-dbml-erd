@@ -574,10 +574,18 @@ class Diagram extends MarkdownRenderChild {
           this.scheduleSaveLayout();
         } else if (e.type === "pointercancel") {
           // gesto abortado: no abrir menú
-        } else if (onHeader) {
-          this.openHeaderMenu(name, e);
-        } else if (colIdx >= 0) {
-          this.openColumnMenu(name, colIdx, e);
+        } else if (onHeader || colIdx >= 0) {
+          // Evita que este pointerup llegue a document: el Menu de Obsidian
+          // registra ahí su listener de auto-cierre y, en táctil, el mismo
+          // evento (o un click/touchend sintético) cerraría el menú al instante.
+          e.stopPropagation();
+          e.preventDefault();
+          const ev = e;
+          if (onHeader) {
+            setTimeout(() => this.openHeaderMenu(name, ev), 0);
+          } else {
+            setTimeout(() => this.openColumnMenu(name, colIdx, ev), 0);
+          }
         }
       };
       g.addEventListener("pointermove", mv);
