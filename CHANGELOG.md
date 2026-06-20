@@ -2,6 +2,12 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.17] - 2026-06-20
+
+### Cambiado
+
+- **Ruteo siempre ortogonal (90°)**: arrastrar un punto de quiebre ya no produce ángulos oblicuos. El punto se mueve libre en cualquier dirección, pero la línea se *ortogonaliza* al dibujarla: entre cada par de puntos que no estén alineados se inserta un codo (`(b.x, a.y)`, "horizontal primero"), de modo que cada quiebre que arrastrás queda como esquina real de 90° (entra en vertical, sale en horizontal). Los dos extremos (puertos de columna) no se modifican; solo se adapta la ruta intermedia. Se eliminan puntos colineales/duplicados para conservar las esquinas redondeadas. Reemplaza el imán suave de 0.1.16, que permitía ángulos arbitrarios.
+
 ## [0.1.16] - 2026-06-20
 
 ### Corregido

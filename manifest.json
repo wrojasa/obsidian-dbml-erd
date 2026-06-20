@@ -1,7 +1,7 @@
 {
   "id": "dbml-erd",
   "name": "DBML ER Diagrams",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "minAppVersion": "1.6.0",
   "description": "Renderiza bloques de código dbml como diagramas entidad-relación con ruteo ortogonal estilo dbdiagram.io.",
   "author": "Wilmar Rojas Avendaño",

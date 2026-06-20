@@ -572,8 +572,45 @@ class Diagram extends MarkdownRenderChild {
     return c ? !c.nn : false; // FK nullable => opcional; si no se halla, mandatorio
   }
 
+  // Convierte una polilínea libre en una ortogonal (solo tramos H/V) insertando
+  // un codo entre cada par de puntos que difieran en ambos ejes. Estrategia
+  // "horizontal primero": el codo va en (b.x, a.y), de modo que cada punto
+  // intermedio que el usuario arrastró queda como esquina real de 90° (se entra
+  // en vertical y se sale en horizontal). Los extremos no se tocan. Se eliminan
+  // puntos colineales/duplicados para no romper el redondeo de esquinas.
+  private orthogonalize(pts: Pt[]): Pt[] {
+    if (pts.length < 2) return pts.slice();
+    const out: Pt[] = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const dx = Math.abs(b.x - a.x);
+      const dy = Math.abs(b.y - a.y);
+      if (dx > 1e-6 && dy > 1e-6) out.push({ x: b.x, y: a.y }); // codo
+      out.push({ x: b.x, y: b.y });
+    }
+    // colapsa puntos repetidos o colineales consecutivos
+    const clean: Pt[] = [];
+    for (const p of out) {
+      const n = clean.length;
+      if (n && Math.abs(clean[n - 1].x - p.x) < 1e-6 && Math.abs(clean[n - 1].y - p.y) < 1e-6)
+        continue; // duplicado
+      if (n >= 2) {
+        const a = clean[n - 2];
+        const m = clean[n - 1];
+        const col1 = Math.abs(a.x - m.x) < 1e-6 && Math.abs(m.x - p.x) < 1e-6;
+        const col2 = Math.abs(a.y - m.y) < 1e-6 && Math.abs(m.y - p.y) < 1e-6;
+        if (col1 || col2) clean[n - 1] = p; // colineal: reemplaza el del medio
+        else clean.push(p);
+      } else clean.push(p);
+    }
+    return clean;
+  }
+
   private drawEdge(r: Ref, pts: Pt[], key: string) {
-    const d = this.roundedPath(pts);
+    // la línea se dibuja ortogonalizada (90°); los markers usan los puntos
+    // lógicos para deducir el lado de salida/entrada de cada extremo.
+    const d = this.roundedPath(this.orthogonalize(pts));
     const path = activeDocument.createElementNS(NS, "path");
     path.setAttribute("d", d);
     path.classList.add("dbml-edge");
@@ -774,31 +811,12 @@ class Diagram extends MarkdownRenderChild {
         }
         const mids = this.customEdges[key];
         if (!mids) return;
+        // el punto se mueve libre; la ruta se ortogonaliza al dibujar (drawEdge),
+        // así siempre queda en ángulos de 90° sin tocar los extremos.
         mids[wp] = {
           x: ox + (e.clientX - sx) / this.view.k,
           y: oy + (e.clientY - sy) / this.view.k,
         };
-        // snap suave de alineación: el punto se mueve libre, pero si queda cerca
-        // (umbral en px de pantalla) de alinear su X o su Y con un vecino, se
-        // engancha en ese eje. Así se logra ortogonal cuando se busca, sin
-        // forzarlo ni colapsar el punto sobre el vecino (antes "se borraban").
-        const anc = this.currentAnchors(r, mids);
-        if (anc) {
-          const prevPt = wp === 0 ? { x: anc.ax, y: anc.ay } : mids[wp - 1];
-          const nextPt =
-            wp === mids.length - 1 ? { x: anc.bx, y: anc.by } : mids[wp + 1];
-          const thr = 7 / this.view.k;
-          let { x, y } = mids[wp];
-          const dxP = Math.abs(x - prevPt.x);
-          const dxN = Math.abs(x - nextPt.x);
-          if (dxP <= thr && dxP <= dxN) x = prevPt.x;
-          else if (dxN <= thr) x = nextPt.x;
-          const dyP = Math.abs(y - prevPt.y);
-          const dyN = Math.abs(y - nextPt.y);
-          if (dyP <= thr && dyP <= dyN) y = prevPt.y;
-          else if (dyN <= thr) y = nextPt.y;
-          mids[wp] = { x, y };
-        }
         el.setAttribute("cx", String(mids[wp].x));
         el.setAttribute("cy", String(mids[wp].y));
         this.redrawEdges(); // solo líneas; handles se reconstruyen al soltar
