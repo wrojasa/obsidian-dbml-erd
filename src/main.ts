@@ -34,6 +34,10 @@ import {
 const NS = "http://www.w3.org/2000/svg";
 
 export default class DbmlErdPlugin extends Plugin {
+  // arista seleccionada por bloque (sourcePath#lineStart); sobrevive a los
+  // re-render del code block para no perder los handles al guardar el layout.
+  selByBlock = new Map<string, string | undefined>();
+
   async onload() {
     const handler = (
       source: string,
@@ -98,6 +102,7 @@ class Diagram extends MarkdownRenderChild {
   private model: Model;
   private pos: Record<string, NodePos>;
   private elkEdges: Pt[][]; // ruta ELK original por ref
+  private selKey?: string; // clave de persistencia de selección (sourcePath#linea)
   private customEdges: Record<string, Pt[]> = {}; // waypoints intermedios por ref
   // frame de anclas (extremos + lados) con el que se autorizaron los waypoints
   // de cada ref; sirve para estirarlos afín-mente al mover tablas (base->actual).
@@ -105,7 +110,14 @@ class Diagram extends MarkdownRenderChild {
     string,
     { ax: number; ay: number; bx: number; by: number; aR: boolean; bR: boolean }
   > = {};
-  private selectedEdge?: string; // ref con handles visibles
+  private _selectedEdge?: string; // ref con handles visibles
+  private get selectedEdge(): string | undefined {
+    return this._selectedEdge;
+  }
+  private set selectedEdge(v: string | undefined) {
+    this._selectedEdge = v;
+    if (this.selKey && this.plugin) this.plugin.selByBlock.set(this.selKey, v);
+  }
   private view = { x: 30, y: 30, k: 1 };
   private movedTables = new Set<string>();
   private saveTimer = 0;
@@ -165,6 +177,16 @@ class Diagram extends MarkdownRenderChild {
     }
     if (opts?.view) this.view = { ...opts.view };
 
+    // restaura la selección de arista de un render previo del mismo bloque
+    // (los handles deben reaparecer aunque Obsidian re-renderice al guardar).
+    if (this.ctx && this.blockEl) {
+      const info = this.ctx.getSectionInfo(this.blockEl);
+      this.selKey = `${this.ctx.sourcePath}#${info ? info.lineStart : 0}`;
+      const prev = this.plugin?.selByBlock.get(this.selKey);
+      if (prev && this.model.refs.some((r) => this.edgeKey(r) === prev))
+        this._selectedEdge = prev;
+    }
+
     const host = parent.createDiv({ cls: "dbml-erd-canvas" });
     this.hostEl = host;
     if (opts?.height)
@@ -195,6 +217,7 @@ class Diagram extends MarkdownRenderChild {
 
     this.drawNodes();
     this.redrawEdges();
+    this.redrawHandles(); // muestra handles si se restauró una selección
     this.bindPanZoom(host);
     this.bindResize(host);
     this.applyView();
@@ -756,6 +779,17 @@ class Diagram extends MarkdownRenderChild {
         } catch {
           /* noop */
         }
+        // tap sin arrastre sobre un add-handle: inserta un quiebre en ese punto
+        // (antes solo se creaba al arrastrar, por eso "el click no hacía nada").
+        if (!started && isAdd && e.type !== "pointercancel") {
+          const cx = parseFloat(el.getAttribute("cx") || "0");
+          const cy = parseFloat(el.getAttribute("cy") || "0");
+          const mids = this.seedCustom(r, i, key);
+          mids.splice(idx, 0, { x: cx, y: cy });
+          this.scheduleSaveLayout();
+          this.refresh();
+          return;
+        }
         if (started) this.scheduleSaveLayout();
         this.redrawHandles();
       };
@@ -1150,10 +1184,27 @@ class Diagram extends MarkdownRenderChild {
       this.ctx.sourcePath
     );
     if (!(file instanceof TFile)) return;
-    await this.plugin.app.vault.process(file, (data) => {
-      const lines = data.split("\n");
-      const range = this.blockRange(lines, info.lineStart);
-      if (!range) return data;
+    // Evita reescrituras idénticas: cada vault.process dispara un evento
+    // "modify" que hace re-renderizar el bloque (nueva instancia => se pierde
+    // la selección y parpadea, incluso en bucle). Solo persistimos si el
+    // contenido del bloque realmente cambió.
+    const current = await this.plugin.app.vault.read(file);
+    const next = this.buildLayoutContent(current, info.lineStart);
+    if (next === null || next === current) return;
+    await this.plugin.app.vault.process(
+      file,
+      (data) => this.buildLayoutContent(data, info.lineStart) ?? data
+    );
+  }
+
+  // reconstruye el contenido completo del archivo con las líneas @pos/@view/
+  // @size/@edge actualizadas dentro del bloque dbml. Devuelve null si el bloque
+  // no se encuentra (no se debe tocar el archivo).
+  private buildLayoutContent(data: string, lineStart: number): string | null {
+    const lines = data.split("\n");
+    const range = this.blockRange(lines, lineStart);
+    if (!range) return null;
+    {
       const [open, close] = range;
       const body = lines
         .slice(open + 1, close)
@@ -1198,7 +1249,7 @@ class Diagram extends MarkdownRenderChild {
         ...sizeLines,
         ...lines.slice(close),
       ].join("\n");
-    });
+    }
   }
 
   private pickColor(name: string) {

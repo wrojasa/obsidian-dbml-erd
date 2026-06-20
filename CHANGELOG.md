@@ -2,6 +2,14 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.15] - 2026-06-19
+
+### Corregido
+
+- **Parpadeo y deselección continua**: `saveLayout` reescribía el bloque en cada llamada aunque el contenido no hubiera cambiado; cada escritura dispara un evento `modify` de Obsidian que re-renderiza el code block (nueva instancia → se pierde la arista seleccionada y sus handles, con parpadeo periódico). Ahora se lee el contenido actual y solo se persiste si el bloque realmente cambió (guarda idempotente), cortando el bucle de re-render.
+- **No se podían crear quiebres con un clic**: los tiradores de inserción ("+" en medio de cada tramo) solo añadían un punto al *arrastrar* (umbral de 3px); un toque/clic sin movimiento no hacía nada. Ahora un clic sobre un tirador de inserción crea el quiebre en ese punto, además del arrastre que ya existía.
+- **La selección de arista sobrevive al re-render**: la arista con handles visibles se recuerda por bloque (`sourcePath#línea`) y se restaura al re-montar el diagrama, de modo que guardar el layout (o añadir varios nodos seguidos) ya no oculta los handles.
+
 ## [0.1.14] - 2026-06-19
 
 ### Corregido
