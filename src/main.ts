@@ -14,6 +14,7 @@ import {
   Ref,
   setHeaderColorInLine,
   renameTableInBlock,
+  deleteTableInBlock,
   renameColumnInBlock,
   setColumnTypeInBlock,
   parsePositions,
@@ -763,7 +764,45 @@ class Diagram extends MarkdownRenderChild {
       h.classList.add("dbml-edge-handle");
       this.handleLayer.appendChild(h);
       this.enableHandleDrag(h, r, i, key, m - 1, false);
+      const idx = m - 1;
+      h.addEventListener("contextmenu", (ev: MouseEvent) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.openWaypointMenu(r, i, key, idx, ev);
+      });
     }
+  }
+
+  // click derecho sobre un quiebre (waypoint): menú para eliminarlo.
+  private openWaypointMenu(
+    r: Ref,
+    i: number,
+    key: string,
+    idx: number,
+    evt: MouseEvent
+  ) {
+    const menu = new Menu();
+    menu.addItem((it) =>
+      it
+        .setTitle("Eliminar quiebre")
+        .setIcon("trash-2")
+        .onClick(() => this.deleteWaypoint(r, i, key, idx))
+    );
+    menu.showAtMouseEvent(evt);
+  }
+
+  // elimina el waypoint idx; mismo flujo que insertar (seedCustom -> mutar ->
+  // guardar). Si no quedan quiebres, descarta la ruta custom (vuelve al auto).
+  private deleteWaypoint(r: Ref, i: number, key: string, idx: number) {
+    const mids = this.seedCustom(r, i, key);
+    if (idx < 0 || idx >= mids.length) return;
+    mids.splice(idx, 1);
+    if (mids.length === 0) {
+      delete this.customEdges[key];
+      delete this.customEdgeBase[key];
+    }
+    this.scheduleSaveLayout();
+    this.refresh();
   }
 
   // arrastra un waypoint; si isAdd, inserta uno nuevo en segIdx y lo arrastra.
@@ -1082,6 +1121,24 @@ class Diagram extends MarkdownRenderChild {
       g.addEventListener("pointerup", up);
       g.addEventListener("pointercancel", up);
     });
+    // click derecho sobre el nodo: menú para eliminar la tabla.
+    g.addEventListener("contextmenu", (ev: MouseEvent) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.openNodeMenu(name, ev);
+    });
+  }
+
+  private openNodeMenu(name: string, evt: MouseEvent) {
+    if (!this.plugin || !this.ctx || !this.blockEl) return;
+    const menu = new Menu();
+    menu.addItem((i) =>
+      i
+        .setTitle("Eliminar tabla")
+        .setIcon("trash-2")
+        .onClick(() => this.deleteTable(name))
+    );
+    menu.showAtMouseEvent(evt);
   }
 
   private openHeaderMenu(name: string, evt: PointerEvent) {
@@ -1203,6 +1260,13 @@ class Diagram extends MarkdownRenderChild {
     this.editBlock(
       (l, s, e) => renameTableInBlock(l, s, e, oldName, newName),
       `No se pudo renombrar "${oldName}" (¿nombre válido? solo letras, números y _).`
+    );
+  }
+
+  private deleteTable(name: string) {
+    this.editBlock(
+      (l, s, e) => deleteTableInBlock(l, s, e, name),
+      `No se pudo eliminar la tabla "${name}".`
     );
   }
 

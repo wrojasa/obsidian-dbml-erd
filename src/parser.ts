@@ -367,6 +367,43 @@ export function renameTableInBlock(
   return true;
 }
 
+// Elimina una tabla del bloque: su declaración, los comentarios @pos/@edge que
+// la mencionan y las relaciones Ref: independientes que la referencian en
+// cualquier extremo. Muta lines (borrando líneas). Devuelve false si no existe.
+export function deleteTableInBlock(
+  lines: string[],
+  start: number,
+  end: number,
+  name: string
+): boolean {
+  const range = findTableRange(lines, start, end, name);
+  if (!range) return false;
+  const [decl, close] = range;
+  const e = esc(name);
+  const toDelete = new Set<number>();
+  for (let i = decl; i <= close; i++) toDelete.add(i);
+  const refRe = new RegExp(`\\b${e}\\.[A-Za-z0-9_]+`);
+  const posRe = new RegExp(`^\\s*//\\s*@pos\\s+"?${e}"?(\\s|$)`);
+  const edgeRe = new RegExp(
+    `^\\s*//\\s*@edge\\s+"?([A-Za-z0-9_]+)"?\\s+"?[A-Za-z0-9_]+"?\\s+"?([A-Za-z0-9_]+)"?\\s`
+  );
+  for (let i = start; i <= end && i < lines.length; i++) {
+    if (toDelete.has(i)) continue;
+    if (posRe.test(lines[i])) {
+      toDelete.add(i);
+      continue;
+    }
+    const em = lines[i].match(edgeRe);
+    if (em) {
+      if (em[1] === name || em[2] === name) toDelete.add(i);
+      continue;
+    }
+    if (/^\s*Ref\s*:/i.test(lines[i]) && refRe.test(lines[i])) toDelete.add(i);
+  }
+  for (const i of [...toDelete].sort((a, b) => b - a)) lines.splice(i, 1);
+  return true;
+}
+
 // Renombra una columna de una tabla y actualiza referencias tabla.col. Muta lines.
 export function renameColumnInBlock(
   lines: string[],
