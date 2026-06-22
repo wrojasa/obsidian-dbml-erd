@@ -2,6 +2,13 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.18] - 2026-06-22
+
+### Añadido
+
+- **Eliminar tabla (clic derecho sobre el nodo)**: el menú contextual de un nodo ofrece "Eliminar tabla", que borra del bloque dbml la declaración de la tabla junto con sus anotaciones `@pos`/`@edge` y las relaciones `Ref:` independientes que la referencian en cualquier extremo.
+- **Eliminar quiebre (clic derecho sobre el waypoint)**: con la línea seleccionada, el menú contextual de un punto de quiebre ofrece "Eliminar quiebre". Reusa el mismo flujo que insertar (rebake al frame actual → mutar → guardar); si era el último quiebre, la conexión vuelve al ruteo automático.
+
 ## [0.1.17] - 2026-06-20
 
 ### Cambiado
