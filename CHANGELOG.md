@@ -2,12 +2,18 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.19] - 2026-06-22
+
+### Añadido
+
+- **Cambiar tipo de relación (cardinalidad)**: el menú de la línea (clic en la conexión seleccionada) permite elegir uno a muchos, muchos a uno, uno a uno o muchos a muchos. Marca la opción actual y reescribe el operador (`<`, `>`, `-`, `<>`) en el bloque dbml, ya sea en la forma independiente `Ref:` o inline en la columna; los marcadores (pata de gallo / barra) se actualizan en consecuencia.
+
 ## [0.1.18] - 2026-06-22
 
 ### Añadido
 
-- **Eliminar tabla (clic derecho sobre el nodo)**: el menú contextual de un nodo ofrece "Eliminar tabla", que borra del bloque dbml la declaración de la tabla junto con sus anotaciones `@pos`/`@edge` y las relaciones `Ref:` independientes que la referencian en cualquier extremo.
-- **Eliminar quiebre (clic derecho sobre el waypoint)**: con la línea seleccionada, el menú contextual de un punto de quiebre ofrece "Eliminar quiebre". Reusa el mismo flujo que insertar (rebake al frame actual → mutar → guardar); si era el último quiebre, la conexión vuelve al ruteo automático.
+- **Eliminar tabla**: el menú de la cabecera del nodo (junto a renombrar/color) ofrece "Eliminar tabla…", con diálogo de confirmación. Borra del bloque dbml la declaración de la tabla junto con sus anotaciones `@pos`/`@edge` y las relaciones `Ref:` independientes que la referencian en cualquier extremo.
+- **Eliminar vértice**: con la línea seleccionada, el menú contextual (clic derecho) de un vértice de la ruta ofrece "Eliminar vértice". Reusa el mismo flujo que insertar (rebake al frame actual → mutar → guardar); si era el último vértice, la conexión vuelve al ruteo automático.
 
 ## [0.1.17] - 2026-06-20
 

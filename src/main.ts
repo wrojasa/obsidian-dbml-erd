@@ -17,6 +17,7 @@ import {
   deleteTableInBlock,
   renameColumnInBlock,
   setColumnTypeInBlock,
+  setRefOpInBlock,
   parsePositions,
   parseView,
   parseSize,
@@ -698,6 +699,22 @@ class Diagram extends MarkdownRenderChild {
           .onClick(() => this.resetEdge(key))
       );
     }
+    // tipo de relación (cardinalidad): cambia pata de gallo (muchos) / barra (uno)
+    const ops: [string, string][] = [
+      ["<", "Uno a muchos (1 → ∞)"],
+      [">", "Muchos a uno (∞ → 1)"],
+      ["-", "Uno a uno (1 → 1)"],
+      ["<>", "Muchos a muchos (∞ ↔ ∞)"],
+    ];
+    for (const [op, label] of ops) {
+      menu.addItem((i) =>
+        i
+          .setTitle(label)
+          .setChecked(r.op === op)
+          .onClick(() => this.setRefOp(r, op))
+      );
+    }
+    menu.addSeparator();
     menu.addItem((i) =>
       i
         .setTitle("Deseleccionar")
@@ -708,6 +725,14 @@ class Diagram extends MarkdownRenderChild {
         })
     );
     menu.showAtMouseEvent(evt);
+  }
+
+  private setRefOp(r: Ref, op: string) {
+    if (r.op === op) return;
+    this.editBlock(
+      (l, s, e) => setRefOpInBlock(l, s, e, r, op),
+      "No se pudo cambiar el tipo de relación."
+    );
   }
 
   private resetEdge(key: string) {
@@ -784,7 +809,7 @@ class Diagram extends MarkdownRenderChild {
     const menu = new Menu();
     menu.addItem((it) =>
       it
-        .setTitle("Eliminar quiebre")
+        .setTitle("Eliminar vértice")
         .setIcon("trash-2")
         .onClick(() => this.deleteWaypoint(r, i, key, idx))
     );
@@ -1121,24 +1146,6 @@ class Diagram extends MarkdownRenderChild {
       g.addEventListener("pointerup", up);
       g.addEventListener("pointercancel", up);
     });
-    // click derecho sobre el nodo: menú para eliminar la tabla.
-    g.addEventListener("contextmenu", (ev: MouseEvent) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      this.openNodeMenu(name, ev);
-    });
-  }
-
-  private openNodeMenu(name: string, evt: MouseEvent) {
-    if (!this.plugin || !this.ctx || !this.blockEl) return;
-    const menu = new Menu();
-    menu.addItem((i) =>
-      i
-        .setTitle("Eliminar tabla")
-        .setIcon("trash-2")
-        .onClick(() => this.deleteTable(name))
-    );
-    menu.showAtMouseEvent(evt);
   }
 
   private openHeaderMenu(name: string, evt: PointerEvent) {
@@ -1165,6 +1172,20 @@ class Diagram extends MarkdownRenderChild {
         .setTitle("Quitar color")
         .setIcon("rotate-ccw")
         .onClick(() => this.setHeaderColor(name, null))
+    );
+    menu.addSeparator();
+    menu.addItem((i) =>
+      i
+        .setTitle("Eliminar tabla…")
+        .setIcon("trash-2")
+        .onClick(() =>
+          this.confirm(
+            "Eliminar tabla",
+            `¿Eliminar la tabla "${name}" del diagrama? Se borrará su definición y las relaciones que la referencian.`,
+            "Eliminar",
+            () => this.deleteTable(name)
+          )
+        )
     );
     menu.showAtMouseEvent(evt);
   }
@@ -1201,6 +1222,16 @@ class Diagram extends MarkdownRenderChild {
   private promptText(title: string, initial: string, cb: (v: string) => void) {
     if (!this.plugin) return;
     new EditModal(this.plugin.app, title, initial, cb).open();
+  }
+
+  private confirm(
+    title: string,
+    body: string,
+    confirmText: string,
+    cb: () => void
+  ) {
+    if (!this.plugin) return;
+    new ConfirmModal(this.plugin.app, title, body, confirmText, cb).open();
   }
 
   private isFence(line: string | undefined): boolean {
@@ -1536,6 +1567,44 @@ class Diagram extends MarkdownRenderChild {
 }
 
 // Modal mínimo con un campo de texto (Enter guarda, Esc cancela).
+class ConfirmModal extends Modal {
+  private titleText: string;
+  private bodyText: string;
+  private confirmText: string;
+  private onConfirm: () => void;
+  constructor(
+    app: App,
+    titleText: string,
+    bodyText: string,
+    confirmText: string,
+    onConfirm: () => void
+  ) {
+    super(app);
+    this.titleText = titleText;
+    this.bodyText = bodyText;
+    this.confirmText = confirmText;
+    this.onConfirm = onConfirm;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: this.titleText });
+    contentEl.createEl("p", { text: this.bodyText });
+    const bar = contentEl.createDiv({ cls: "dbml-edit-actions" });
+    const ok = bar.createEl("button", { text: this.confirmText });
+    ok.classList.add("mod-warning");
+    ok.onclick = () => {
+      this.close();
+      this.onConfirm();
+    };
+    const cancel = bar.createEl("button", { text: "Cancelar" });
+    cancel.onclick = () => this.close();
+    cancel.focus();
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
 class EditModal extends Modal {
   private titleText: string;
   private initial: string;

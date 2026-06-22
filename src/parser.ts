@@ -473,6 +473,51 @@ export function setColumnTypeInBlock(
   return false;
 }
 
+// Cambia el operador de cardinalidad de una relación (<, >, -, <>). Busca tanto
+// la forma independiente (`Ref: a.c > b.c`) como la inline dentro de la columna
+// de origen (`c tipo [ref: > b.c]`). Muta lines. Devuelve false si no la halla.
+export function setRefOpInBlock(
+  lines: string[],
+  start: number,
+  end: number,
+  ref: { from: string; fromCol: string; to: string; toCol: string },
+  newOp: string
+): boolean {
+  if (!/^(<>|>|<|-)$/.test(newOp)) return false;
+  const ef = esc(ref.from),
+    efc = esc(ref.fromCol),
+    et = esc(ref.to),
+    etc = esc(ref.toCol);
+  // 1) forma independiente: a.c OP b.c (con o sin "Ref:")
+  const standalone = new RegExp(
+    `^(\\s*(?:Ref:\\s*)?"?${ef}"?\\.${efc}\\s*)(<>|>|<|-)(\\s*"?${et}"?\\.${etc})`
+  );
+  for (let i = start; i <= end && i < lines.length; i++) {
+    if (/^\s*\/\/\s*@/.test(lines[i])) continue;
+    if (standalone.test(lines[i])) {
+      lines[i] = lines[i].replace(standalone, `$1${newOp}$3`);
+      return true;
+    }
+  }
+  // 2) inline en la columna de origen dentro de la tabla `from`
+  const range = findTableRange(lines, start, end, ref.from);
+  if (range) {
+    const [decl, close] = range;
+    const colRe = new RegExp(`^\\s*${efc}\\s`);
+    const inlineRe = new RegExp(
+      `(ref:\\s*)(<>|>|<|-)(\\s*"?${et}"?\\.${etc})`,
+      "i"
+    );
+    for (let i = decl + 1; i < close; i++) {
+      if (colRe.test(lines[i]) && inlineRe.test(lines[i])) {
+        lines[i] = lines[i].replace(inlineRe, `$1${newOp}$3`);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // ---- posiciones / vista persistidas como comentarios ----
 
 export function parsePositions(
