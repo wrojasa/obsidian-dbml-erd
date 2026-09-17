@@ -367,15 +367,17 @@ class Diagram extends MarkdownRenderChild {
     if (!A || !B) return null;
     const ay = A.y + this.colRowY(r.from, r.fromCol);
     const by = B.y + this.colRowY(r.to, r.toCol);
-    const aCx = A.x + NODE_W / 2;
-    const bCx = B.x + NODE_W / 2;
+    const aw = A.w || NODE_W;
+    const bw = B.w || NODE_W;
+    const aCx = A.x + aw / 2;
+    const bCx = B.x + bw / 2;
     // Si las tablas se solapan en X (apiladas), ambas salen por el mismo lado
     // y la línea rodea por fuera; si no, cada una mira hacia la otra.
-    const overlapX = Math.abs(bCx - aCx) < NODE_W;
+    const overlapX = Math.abs(bCx - aCx) < Math.max(aw, bw);
     const aRight = overlapX ? true : bCx >= aCx;
     const bRight = overlapX ? true : !aRight;
-    const ax = aRight ? A.x + NODE_W : A.x;
-    const bx = bRight ? B.x + NODE_W : B.x;
+    const ax = aRight ? A.x + aw : A.x;
+    const bx = bRight ? B.x + bw : B.x;
     const stub = 18;
     const ax2 = ax + (aRight ? stub : -stub);
     const bx2 = bx + (bRight ? stub : -stub);
@@ -534,19 +536,21 @@ class Diagram extends MarkdownRenderChild {
     if (!A || !B) return null;
     const ay = A.y + this.colRowY(r.from, r.fromCol);
     const by = B.y + this.colRowY(r.to, r.toCol);
+    const aw = A.w || NODE_W;
+    const bw = B.w || NODE_W;
     let aR: boolean, bR: boolean;
     if (base) {
       aR = base.aR;
       bR = base.bR;
     } else if (mid.length) {
-      aR = mid[0].x >= A.x + NODE_W / 2;
-      bR = mid[mid.length - 1].x >= B.x + NODE_W / 2;
+      aR = mid[0].x >= A.x + aw / 2;
+      bR = mid[mid.length - 1].x >= B.x + bw / 2;
     } else {
-      aR = B.x + NODE_W / 2 >= A.x + NODE_W / 2;
+      aR = B.x + bw / 2 >= A.x + aw / 2;
       bR = !aR;
     }
-    const ax = aR ? A.x + NODE_W : A.x;
-    const bx = bR ? B.x + NODE_W : B.x;
+    const ax = aR ? A.x + aw : A.x;
+    const bx = bR ? B.x + bw : B.x;
     return { ax, ay, bx, by, aR, bR };
   }
 
@@ -958,8 +962,9 @@ class Diagram extends MarkdownRenderChild {
       g.classList.add("dbml-node");
       g.setAttribute("transform", `translate(${P.x},${P.y})`);
       const h = HEAD_H + t.cols.length * ROW_H;
+      const w = P.w || NODE_W;
 
-      const body = this.rect(0, 0, NODE_W, h, "dbml-body");
+      const body = this.rect(0, 0, w, h, "dbml-body");
       body.setAttribute("rx", "6");
       g.appendChild(body);
 
@@ -967,7 +972,7 @@ class Diagram extends MarkdownRenderChild {
         const rr = this.rect(
           1,
           HEAD_H + i * ROW_H,
-          NODE_W - 2,
+          w - 2,
           ROW_H,
           i % 2 ? "dbml-row alt" : "dbml-row"
         );
@@ -975,10 +980,10 @@ class Diagram extends MarkdownRenderChild {
         g.appendChild(rr);
       });
 
-      const head = this.rect(0, 0, NODE_W, HEAD_H, "dbml-head");
+      const head = this.rect(0, 0, w, HEAD_H, "dbml-head");
       head.setAttribute("rx", "6");
       g.appendChild(head);
-      const headFix = this.rect(0, HEAD_H - 8, NODE_W, 8, "dbml-head");
+      const headFix = this.rect(0, HEAD_H - 8, w, 8, "dbml-head");
       g.appendChild(headFix);
       const headTxt = this.text(14, HEAD_H / 2 + 4, t.name, "dbml-head-txt");
       g.appendChild(headTxt);
@@ -1009,17 +1014,17 @@ class Diagram extends MarkdownRenderChild {
           ic.setAttribute("data-col", String(i));
           g.appendChild(ic);
         }
-        let tx = NODE_W - 14;
+        let tx = w - 14;
         if (c.nn) {
           const bw = 22;
-          const b = this.rect(NODE_W - 14 - bw, y - 13, bw, 15, "dbml-badge");
+          const b = this.rect(w - 14 - bw, y - 13, bw, 15, "dbml-badge");
           b.setAttribute("rx", "3");
           b.setAttribute("data-col", String(i));
           g.appendChild(b);
-          const bt = this.text(NODE_W - 14 - bw / 2, y - 1.5, "NN", "dbml-badge-txt");
+          const bt = this.text(w - 14 - bw / 2, y - 1.5, "NN", "dbml-badge-txt");
           bt.setAttribute("data-col", String(i));
           g.appendChild(bt);
-          tx = NODE_W - 14 - bw - 8;
+          tx = w - 14 - bw - 8;
         }
         const ty = this.text(tx, y, c.type, "dbml-type");
         ty.setAttribute("data-col", String(i));
