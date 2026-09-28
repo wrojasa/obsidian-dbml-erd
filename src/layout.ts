@@ -10,7 +10,54 @@ import type { Model } from "./parser";
 
 export const ROW_H = 28;
 export const HEAD_H = 36;
-export const NODE_W = 216;
+export const NODE_W = 216; // ancho mínimo de tabla
+
+// métricas usadas para calcular cuánto debe ensancharse una tabla cuando
+// un nombre de columna/tipo no entra en NODE_W (evita que se solapen).
+const PAD_L = 14;
+const PAD_R = 14;
+const NAME_TYPE_GAP = 16;
+const ICON_W = 18; // 🔑/🔗
+const BADGE_W = 22;
+const BADGE_GAP = 8;
+const HEAD_FONT = "700 13px sans-serif";
+const COL_FONT = "12.5px sans-serif";
+const COL_FONT_BOLD = "700 12.5px sans-serif";
+const TYPE_FONT = "11.5px sans-serif";
+
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+function getMeasureCtx(): CanvasRenderingContext2D | null {
+  if (measureCtx === undefined) {
+    try {
+      measureCtx = document.createElement("canvas").getContext("2d");
+    } catch {
+      measureCtx = null;
+    }
+  }
+  return measureCtx;
+}
+
+function measureText(text: string, font: string): number {
+  const ctx = getMeasureCtx();
+  if (!ctx) return text.length * 7; // estimación si no hay canvas disponible
+  ctx.font = font;
+  return ctx.measureText(text).width;
+}
+
+// ancho de tabla: NODE_W, o más si el nombre de la tabla o alguna fila
+// (nombre + icono + tipo + badge NN) lo necesita para no solaparse.
+export function tableWidth(t: Model["tables"][number]): number {
+  let w = measureText(t.name, HEAD_FONT) + PAD_L * 2;
+  for (const c of t.cols) {
+    let rowW = PAD_L + measureText(c.name, c.pk ? COL_FONT_BOLD : COL_FONT);
+    if (c.pk || c.fk) rowW += ICON_W;
+    rowW += NAME_TYPE_GAP + measureText(c.type, TYPE_FONT);
+    if (c.nn) rowW += BADGE_GAP + BADGE_W;
+    rowW += PAD_R;
+    w = Math.max(w, rowW);
+  }
+  return Math.max(NODE_W, Math.ceil(w));
+}
 
 export interface Pt {
   x: number;
@@ -57,22 +104,23 @@ function colRowY(model: Model, table: string, col: string): number {
 export async function computeLayout(model: Model): Promise<LayoutResult> {
   const children: ElkNode[] = model.tables.map((t) => {
     const h = tableHeight(t.cols.length);
+    const w = tableWidth(t);
     const ports: ElkPort[] = [];
     model.refs.forEach((r, i) => {
       if (r.from === t.name) {
         const y = colRowY(model, t.name, r.fromCol);
-        ports.push(port(`s${i}_e`, NODE_W, y, "EAST"));
+        ports.push(port(`s${i}_e`, w, y, "EAST"));
         ports.push(port(`s${i}_w`, 0, y, "WEST"));
       }
       if (r.to === t.name) {
         const y = colRowY(model, t.name, r.toCol);
-        ports.push(port(`t${i}_e`, NODE_W, y, "EAST"));
+        ports.push(port(`t${i}_e`, w, y, "EAST"));
         ports.push(port(`t${i}_w`, 0, y, "WEST"));
       }
     });
     return {
       id: t.name,
-      width: NODE_W,
+      width: w,
       height: h,
       ports,
       layoutOptions: { "elk.portConstraints": "FIXED_POS" },
