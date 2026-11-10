@@ -25,16 +25,20 @@ const COL_FONT = "12.5px sans-serif";
 const COL_FONT_BOLD = "700 12.5px sans-serif";
 const TYPE_FONT = "11.5px sans-serif";
 
-let measureCtx: CanvasRenderingContext2D | null | undefined;
+// Un canvas de medición por documento: con `activeDocument` el plugin respeta
+// las ventanas emergentes de Obsidian, y la WeakMap evita reutilizar el canvas
+// de una ventana que ya se cerró.
+const measureCtxs = new WeakMap<Document, CanvasRenderingContext2D | null>();
 function getMeasureCtx(): CanvasRenderingContext2D | null {
-  if (measureCtx === undefined) {
-    try {
-      measureCtx = document.createElement("canvas").getContext("2d");
-    } catch {
-      measureCtx = null;
+  try {
+    const doc = activeDocument;
+    if (!measureCtxs.has(doc)) {
+      measureCtxs.set(doc, doc.createElement("canvas").getContext("2d"));
     }
+    return measureCtxs.get(doc) ?? null;
+  } catch {
+    return null; // sin DOM (p. ej. pruebas en node)
   }
-  return measureCtx;
 }
 
 function measureText(text: string, font: string): number {
@@ -44,12 +48,19 @@ function measureText(text: string, font: string): number {
   return ctx.measureText(text).width;
 }
 
+// Ancho del nombre de una columna con la misma fuente que usa tableWidth. El
+// render ubica el ícono 🔑/🔗 con este valor para que coincida con el espacio
+// que la tabla le reservó.
+export function colNameWidth(c: Model["tables"][number]["cols"][number]): number {
+  return measureText(c.name, c.pk ? COL_FONT_BOLD : COL_FONT);
+}
+
 // ancho de tabla: NODE_W, o más si el nombre de la tabla o alguna fila
 // (nombre + icono + tipo + badge NN) lo necesita para no solaparse.
 export function tableWidth(t: Model["tables"][number]): number {
   let w = measureText(t.name, HEAD_FONT) + PAD_L * 2;
   for (const c of t.cols) {
-    let rowW = PAD_L + measureText(c.name, c.pk ? COL_FONT_BOLD : COL_FONT);
+    let rowW = PAD_L + colNameWidth(c);
     if (c.pk || c.fk) rowW += ICON_W;
     rowW += NAME_TYPE_GAP + measureText(c.type, TYPE_FONT);
     if (c.nn) rowW += BADGE_GAP + BADGE_W;

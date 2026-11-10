@@ -34,6 +34,7 @@ import {
   ROW_H,
   HEAD_H,
   NODE_W,
+  colNameWidth,
 } from "./layout";
 
 const NS = "http://www.w3.org/2000/svg";
@@ -372,8 +373,11 @@ class Diagram extends MarkdownRenderChild {
     const aCx = A.x + aw / 2;
     const bCx = B.x + bw / 2;
     // Si las tablas se solapan en X (apiladas), ambas salen por el mismo lado
-    // y la línea rodea por fuera; si no, cada una mira hacia la otra.
-    const overlapX = Math.abs(bCx - aCx) < Math.max(aw, bw);
+    // y la línea rodea por fuera; si no, cada una mira hacia la otra. Hay
+    // solape cuando la distancia entre centros es menor que el promedio de los
+    // anchos; con el ancho mayor, una tabla ancha junto a una angosta se tomaba
+    // como apilada y la línea daba la vuelta.
+    const overlapX = Math.abs(bCx - aCx) < (aw + bw) / 2;
     const aRight = overlapX ? true : bCx >= aCx;
     const bRight = overlapX ? true : !aRight;
     const ax = aRight ? A.x + aw : A.x;
@@ -610,7 +614,10 @@ class Diagram extends MarkdownRenderChild {
     }
     const t = this.model.tables.find((t) => t.name === table);
     const c = t?.cols.find((c) => c.name === col);
-    return c ? !c.nn : false; // FK nullable => opcional; si no se halla, mandatorio
+    // FK nullable => opcional; si no se halla, mandatorio. Una columna PK no
+    // admite NULL aunque el bloque no diga `not null` (p. ej. FK que es PK en
+    // un 1:1, o miembro de una PK compuesta).
+    return c ? !(c.nn || c.pk) : false;
   }
 
   // Convierte una polilínea libre en una ortogonal (solo tramos H/V) insertando
@@ -1005,8 +1012,9 @@ class Diagram extends MarkdownRenderChild {
         nm.setAttribute("data-col", String(i));
         g.appendChild(nm);
         if (c.pk || c.fk) {
+          // misma medida que tableWidth usó para reservarle espacio al ícono
           const ic = this.text(
-            14 + c.name.length * 7 + 8,
+            14 + colNameWidth(c) + 8,
             y,
             c.pk ? "🔑" : "🔗",
             "dbml-icon"

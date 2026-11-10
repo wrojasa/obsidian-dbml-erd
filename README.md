@@ -84,14 +84,15 @@ Ref: contract.client_id > client.client_id
 
 ### Supported syntax
 
-- `Table name { ... }` (and the short form `name { ... }`).
-- Columns: `name type [pk, not null, note: '...', ref: > other.col]`.
-- Relationships: a `Ref: a.col > b.col` line, inline `ref: > b.col`, or the direct form `a.col <> b.col`.
+- `Table name { ... }` (keyword in any case, and the short form `name { ... }`).
+- Columns: `name type [pk, not null, note: '...', ref: > other.col]`, one per line.
+- Relationships: a `Ref: a.col > b.col` line (optionally named, `Ref fk_name: ...`), the long form `Ref { a.col > b.col }`, inline `ref: > b.col`, or the direct form `a.col <> b.col`.
 - Cardinality operators: `>` (many→one), `<` (one→many), `<>` (many↔many), `-` (one↔one).
 - Per-table header color: `Table name [headercolor: #2E7D32] { ... }`.
-- Table and column notes (`Note: '...'`, `note: '...'`).
+- Table and column notes (`Note: '...'`, `note: '...'`) are accepted and kept in the block, but not drawn in the diagram.
 - Optional `// height: N` directive (canvas height in px).
-- `//` comments.
+- `//` and `/* ... */` comments.
+- `indexes { }`, `enum`, `TableGroup`, `Project` and sticky `Note` blocks are accepted and ignored.
 
 > A deliberate subset of DBML, enough for controlled schemas. It does not yet include enums, table groups or composite keys.
 
@@ -108,7 +109,7 @@ The plugin stores the visual state as comments inside the block; you don't need 
 
 ## Generate the DBML automatically (`sql-to-dbml` skill)
 
-So you don't have to write the DBML by hand there is a Claude Code skill, **`sql-to-dbml`**, that converts SQL `CREATE TABLE` scripts (generic ANSI) — or tables you define during the conversation — into DBML compatible with this plugin (it degrades to what the plugin draws, never emitting syntax it can't understand).
+So you don't have to write the DBML by hand there is a Claude Code skill, **`sql-to-dbml`**, that converts SQL `CREATE TABLE` scripts (ANSI, SQL Server, PostgreSQL or MySQL) — or tables you define during the conversation — into DBML compatible with this plugin (it degrades to what the plugin draws, never emitting syntax it can't understand).
 
 - Repository: <https://github.com/wrojasa/skill-sql-to-dbml>
 - Typical triggers: "convert this CREATE TABLE to dbml", "generate the dbml for these tables", "build the ERD in dbml", "add this table to the dbml", "update the dbml with…".

@@ -29,6 +29,37 @@ export interface Model {
   refs: Ref[];
 }
 
+// Palabra clave `Table` sin distinguir mayúsculas (como en dbdiagram.io), sin
+// volver insensible el nombre de la tabla que la sigue.
+const TABLE_KW = "[Tt][Aa][Bb][Ll][Ee]";
+
+// Bloques DBML de nivel raíz que no son tablas. Escritos sin nombre
+// (`TableGroup {`, `enum {`, `Note {`, `Ref {`) casan con la forma corta de
+// tabla, así que se descartan explícitamente para no dibujar tablas fantasma.
+const NON_TABLE_BLOCKS = new Set([
+  "tablegroup",
+  "enum",
+  "project",
+  "note",
+  "ref",
+  "indexes",
+]);
+
+// `note: '...'` o `note: "..."` dentro de los settings de una columna. La nota
+// termina en la comilla seguida de `,` o `]`, así un apóstrofo interno
+// ("it's") no la corta ni deja texto suelto que se lea como setting.
+const COL_NOTE_RE = /note:\s*(?:'(.*?)'|"(.*?)")(?=\s*(?:,|\]|$))/i;
+const INLINE_REF_RE = /ref:\s*(<>|>|<|-)\s*([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)/i;
+
+function countBraces(line: string): number {
+  let n = 0;
+  for (const ch of line) {
+    if (ch === "{") n++;
+    else if (ch === "}") n--;
+  }
+  return n;
+}
+
 // Dado el índice de una comilla simple en src, devuelve el índice del carácter
 // SIGUIENTE al cierre de esa cadena. Soporta cadenas triple ('''...'''),
 // escape \' y cadenas de una línea sin cerrar (corta en el salto de línea, lo
@@ -52,8 +83,10 @@ function skipString(src: string, i: number): number {
   return src.length;
 }
 
-// Quita comentarios de línea // respetando cadenas entre comillas simples
-// (así un Note: 'ver http://x' o un default con // no se trunca).
+// Quita comentarios de línea // y de bloque /* … */ respetando cadenas entre
+// comillas simples (así un Note: 'ver http://x' o un default con // no se
+// trunca). Los saltos de línea dentro de un /* … */ se conservan para que las
+// declaraciones siguientes sigan empezando en su propia línea.
 function stripLineComments(input: string): string {
   let out = "";
   let i = 0;
@@ -68,6 +101,13 @@ function stripLineComments(input: string): string {
     if (ch === "/" && input[i + 1] === "/") {
       while (i < input.length && input[i] !== "\n") i++;
       continue; // el salto de línea lo agrega la próxima vuelta
+    }
+    if (ch === "/" && input[i + 1] === "*") {
+      const close = input.indexOf("*/", i + 2);
+      const stop = close < 0 ? input.length : close + 2;
+      for (let k = i; k < stop; k++) if (input[k] === "\n") out += "\n";
+      i = stop;
+      continue;
     }
     out += ch;
     i++;
@@ -103,26 +143,40 @@ function matchBrace(src: string, openIdx: number): number {
 }
 
 export function parseDBML(input: string): Model {
-  const src = stripLineComments(input);
+  // BOM (U+FEFF) pegado desde archivos o la web: no es [ \t] y anularía la
+  // declaración de tabla que tenga delante.
+  const src = stripLineComments(input.replace(/﻿/g, ""));
   const tables: Table[] = [];
   const refs: Ref[] = [];
 
   const relRe =
     /(?:Ref:\s*)?([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\s*(<>|>|<|-)\s*([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)/g;
-  // Declaración de tabla: 'Table' opcional, nombre (opc. entre comillas),
-  // 'as alias' opcional, [settings] opcional, hasta la '{' de apertura.
-  const declRe =
-    /(?:^|\n)[ \t]*(?:Table[ \t]+)?"?([A-Za-z0-9_]+)"?\s*(?:as\s+\w+\s*)?(?:\[([^\]]*)\]\s*)?\{/g;
+  // Declaración de tabla: 'Table' opcional (grupo 1), nombre opc. entre
+  // comillas (grupo 2), 'as alias' opcional, [settings] opcional (grupo 3),
+  // hasta la '{' de apertura. Tolera NBSP de texto pegado desde la web.
+  const declRe = new RegExp(
+    `(?:^|\\n)[ \\t\\u00a0]*(?:(${TABLE_KW})[ \\t\\u00a0]+)?"?([A-Za-z0-9_]+)"?\\s*(?:as\\s+\\w+\\s*)?(?:\\[([^\\]]*)\\]\\s*)?\\{`,
+    "g"
+  );
 
   const bodies: [number, number][] = [];
   let m: RegExpExecArray | null;
 
   while ((m = declRe.exec(src)) !== null) {
-    const name = m[1];
-    const settings = m[2] || "";
+    const hasKeyword = !!m[1];
+    const name = m[2];
+    const settings = m[3] || "";
     const braceIdx = m.index + m[0].length - 1; // m[0] termina en '{'
     const closeIdx = matchBrace(src, braceIdx);
     if (closeIdx < 0) continue;
+    if (!hasKeyword && NON_TABLE_BLOCKS.has(name.toLowerCase())) {
+      // `TableGroup {`, `enum {`, `Note {`… sin nombre: no es una tabla. Su
+      // cuerpo se excluye del escaneo de relaciones, salvo `Ref { … }`, cuyas
+      // relaciones sí deben leerse.
+      if (name.toLowerCase() !== "ref") bodies.push([m.index, closeIdx + 1]);
+      declRe.lastIndex = closeIdx + 1;
+      continue;
+    }
     const body = src.slice(braceIdx + 1, closeIdx);
     bodies.push([m.index, closeIdx + 1]);
 
@@ -133,49 +187,78 @@ export function parseDBML(input: string): Model {
     );
     const headerColor = hcMatch ? hcMatch[1].trim() : undefined;
 
-    let skipDepth = 0; // para saltar sub-bloques tipo indexes { ... }
+    let skipDepth = 0; // sub-bloques indexes { ... } / Note { ... }
+    let awaitBrace = false; // `indexes` o `Note` con la llave en la línea siguiente
+    let tripleNote: string[] | null = null; // Note: ''' … ''' en varias líneas
     for (let line of body.split("\n")) {
       line = line.trim();
-      if (skipDepth > 0) {
-        for (const ch of line) {
-          if (ch === "{") skipDepth++;
-          else if (ch === "}") skipDepth--;
+      if (tripleNote) {
+        const end = line.indexOf("'''");
+        if (end < 0) {
+          tripleNote.push(line);
+          continue;
         }
+        tripleNote.push(line.slice(0, end));
+        tableNote = tripleNote.join(" ").replace(/\s+/g, " ").trim();
+        tripleNote = null;
+        continue;
+      }
+      if (awaitBrace) {
+        awaitBrace = false;
+        if (line.startsWith("{")) {
+          skipDepth = countBraces(line);
+          continue;
+        }
+      }
+      if (skipDepth > 0) {
+        skipDepth += countBraces(line);
         continue;
       }
       if (!line || line === "{" || line === "}") continue;
-      const tn = line.match(/^Note:\s*'([^']*)'/i);
-      if (tn) {
-        tableNote = tn[1];
+      const tq = line.match(/^Note:\s*'''(.*)$/i);
+      if (tq) {
+        const end = tq[1].indexOf("'''");
+        if (end >= 0) tableNote = tq[1].slice(0, end).trim();
+        else tripleNote = [tq[1]];
         continue;
       }
-      if (/^indexes\b/i.test(line)) {
-        // salta el bloque indexes { ... } si abre llave en esta o próximas líneas
-        for (const ch of line) {
-          if (ch === "{") skipDepth++;
-          else if (ch === "}") skipDepth--;
-        }
+      // hasta la ÚLTIMA comilla de la línea: un apóstrofo interno no la corta
+      const tn = line.match(/^Note:\s*(?:'(.*)'|"(.*)")\s*$/i);
+      if (tn) {
+        tableNote = (tn[1] ?? tn[2]).replace(/\\'/g, "'");
+        continue;
+      }
+      if (/^(?:indexes|note)\s*\{/i.test(line)) {
+        skipDepth = countBraces(line);
+        continue;
+      }
+      if (/^(?:indexes|note)$/i.test(line)) {
+        awaitBrace = true;
         continue;
       }
       const cm = line.match(/^([A-Za-z0-9_]+)\s+([^[\n]+?)\s*(\[.*\])?\s*$/);
       if (!cm) continue;
       const rawAttrs = cm[3] || "";
-      const attrs = rawAttrs.toLowerCase();
-      const noteM = rawAttrs.match(/note:\s*'([^']*)'/i);
-      // pk / not null se detectan sobre los atributos sin la nota (evita falsos positivos)
-      const flags = attrs.replace(/note:\s*'[^']*'/i, "");
+      const noteM = rawAttrs.match(COL_NOTE_RE);
+      // settings sin la nota: su texto nunca cuenta como pk / not null / ref
+      const rest = rawAttrs.replace(COL_NOTE_RE, "");
+      const ir = rest.match(INLINE_REF_RE);
+      // flags sin valores entre comillas (p. ej. default: 'not null') ni el
+      // destino del ref (p. ej. ref: > a.pk), que darían falsos positivos
+      const flags = rest
+        .replace(/'[^']*'|"[^"]*"/g, "")
+        .replace(/ref:\s*(?:<>|>|<|-)\s*[^,\]]*/gi, "")
+        .toLowerCase();
+      const note = noteM ? noteM[1] ?? noteM[2] : undefined;
       const col: Column = {
         name: cm[1],
         type: cm[2],
-        pk: /\bpk\b|\bprimary key\b/.test(flags),
+        pk: /\bpk\b|\bprimary\s+key\b/.test(flags),
         fk: false,
-        nn: /\bnot null\b/.test(flags),
-        note: noteM ? noteM[1] : undefined,
+        nn: /\bnot\s+null\b/.test(flags),
+        note: note?.replace(/\\'/g, "'"),
       };
       cols.push(col);
-      const ir = rawAttrs.match(
-        /ref:\s*(<>|>|<|-)\s*([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)/i
-      );
       if (ir) {
         refs.push({
           from: name,
@@ -188,6 +271,20 @@ export function parseDBML(input: string): Model {
     }
     tables.push({ name, note: tableNote, headerColor, cols });
     declRe.lastIndex = closeIdx + 1; // no re-escanear dentro del cuerpo
+  }
+
+  // Bloques con nombre que no son tablas (`enum x {`, `TableGroup g {`,
+  // `Note n {`, `Project p {`): su contenido no debe leerse como relaciones.
+  // `Ref nombre { … }` sí contiene relaciones y no se excluye.
+  const blockRe =
+    /(?:^|\n)[ \t]*(enum|TableGroup|Project|Note|Ref)[ \t]+[^\n{:]*\{/gi;
+  while ((m = blockRe.exec(src)) !== null) {
+    const idx = m.index;
+    if (bodies.some(([s, e]) => idx >= s && idx < e)) continue;
+    const closeIdx = matchBrace(src, m.index + m[0].length - 1);
+    if (closeIdx < 0) continue;
+    if (m[1].toLowerCase() !== "ref") bodies.push([idx, closeIdx + 1]);
+    blockRe.lastIndex = closeIdx + 1;
   }
 
   while ((m = relRe.exec(src)) !== null) {
@@ -219,9 +316,11 @@ export function parseDBML(input: string): Model {
     validRefs.push(r);
   }
 
-  // marca FKs (lado 'from' de cada relación)
+  // marca FKs: la columna del lado "muchos". En `<` es la de 'to'; en `>`,
+  // `-` y `<>`, la de 'from' (mismo criterio que la marca de cardinalidad).
   for (const r of validRefs) {
-    const c = byName.get(r.from)?.cols.find((c) => c.name === r.fromCol);
+    const [ft, fc] = r.op === "<" ? [r.to, r.toCol] : [r.from, r.fromCol];
+    const c = byName.get(ft)?.cols.find((c) => c.name === fc);
     if (c) c.fk = true;
   }
 
@@ -266,10 +365,12 @@ export function setHeaderColorInLine(
   if (color !== null && /[\]',\n]|\/\//.test(color)) return null; // evita romper el bloque
   const e = esc(tableName);
   const re = new RegExp(
-    `^(\\s*(?:Table\\s+)?"?${e}"?\\s*(?:as\\s+\\w+\\s*)?)(\\[[^\\]]*\\])?\\s*(\\{.*)?$`
+    `^(\\s*(?:${TABLE_KW}\\s+)?"?${e}"?\\s*(?:as\\s+\\w+\\s*)?)(\\[[^\\]]*\\])?\\s*(\\{.*)?$`
   );
   const m = line.match(re);
   if (!m) return null;
+  // sin `Table` ni `{` es una columna sin tipo (`  user [pk]`), no la tabla
+  if (!new RegExp(`^\\s*${TABLE_KW}\\s`).test(line) && !m[3]) return null;
   const head = m[1].replace(/\s+$/, "");
   const inner = (m[2] || "").replace(/^\[|\]$/g, "");
   const rest = m[3] ? " " + m[3].replace(/^\s*/, "") : "";
@@ -303,8 +404,12 @@ function findTableRange(
   name: string
 ): [number, number] | null {
   const e = esc(name);
+  // Con `Table`, el nombre debe terminar ahí (`Table user` no casa con
+  // `Table user_role`); sin `Table`, la línea debe abrir `{`. Antes bastaba con
+  // que la línea EMPEZARA por el nombre, y renombrar o borrar `user` atacaba la
+  // primera tabla `user_role` o columna `user_id` declarada antes.
   const declRe = new RegExp(
-    `^\\s*(?:Table\\s+)?"?${e}"?\\s*(?:as\\s+\\w+\\s*)?(?:\\[[^\\]]*\\]\\s*)?\\{?`
+    `^\\s*(?:${TABLE_KW}\\s+"?${e}"?(?![A-Za-z0-9_])|"?${e}"?\\s*(?:as\\s+\\w+\\s*)?(?:\\[[^\\]]*\\]\\s*)?(?:\\{|$))`
   );
   let decl = -1;
   for (let i = start; i <= end && i < lines.length; i++) {
@@ -340,7 +445,7 @@ export function renameTableInBlock(
   const [decl] = range;
   const e = esc(oldName);
   lines[decl] = lines[decl].replace(
-    new RegExp(`^(\\s*(?:Table\\s+)?)"?${e}"?`),
+    new RegExp(`^(\\s*(?:${TABLE_KW}\\s+)?)"?${e}"?`),
     `$1${newName}`
   );
   // referencias tabla.col: solo fuera de cadenas y solo cuando hay columna detrás
@@ -367,9 +472,32 @@ export function renameTableInBlock(
   return true;
 }
 
+// Quita de los settings de una columna el `ref:` inline que apunta a `table`.
+// Devuelve la línea intacta si no lo tiene. Si era el único setting, quita
+// también los corchetes.
+function dropInlineRefTo(line: string, table: string): string {
+  const m = line.match(/^(\s*[A-Za-z0-9_]+\s+[^[\n]*?)\s*\[(.*)\](\s*)$/);
+  if (!m) return line;
+  const target = new RegExp(
+    `^ref\\s*:\\s*(?:<>|>|<|-)\\s*"?${esc(table)}"?\\.`,
+    "i"
+  );
+  const parts = m[2]
+    .split(/,(?=(?:[^']*'[^']*')*[^']*$)/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const kept = parts.filter((p) => !target.test(p));
+  if (kept.length === parts.length) return line;
+  return kept.length
+    ? `${m[1]} [${kept.join(", ")}]${m[3]}`
+    : `${m[1]}${m[3]}`;
+}
+
 // Elimina una tabla del bloque: su declaración, los comentarios @pos/@edge que
-// la mencionan y las relaciones Ref: independientes que la referencian en
-// cualquier extremo. Muta lines (borrando líneas). Devuelve false si no existe.
+// la mencionan, las relaciones independientes que la referencian en cualquier
+// extremo (`Ref:`, `Ref nombre:` o la forma corta `a.c > b.c`) y los `ref:`
+// inline de otras tablas que apuntan a ella. Muta lines. Devuelve false si no
+// existe.
 export function deleteTableInBlock(
   lines: string[],
   start: number,
@@ -383,6 +511,8 @@ export function deleteTableInBlock(
   const toDelete = new Set<number>();
   for (let i = decl; i <= close; i++) toDelete.add(i);
   const refRe = new RegExp(`\\b${e}\\.[A-Za-z0-9_]+`);
+  const relLineRe =
+    /^\s*(?:Ref\b[^:\n]*:\s*)?"?[A-Za-z0-9_]+"?\.[A-Za-z0-9_]+\s*(?:<>|>|<|-)\s*"?[A-Za-z0-9_]+"?\.[A-Za-z0-9_]+/i;
   const posRe = new RegExp(`^\\s*//\\s*@pos\\s+"?${e}"?(\\s|$)`);
   const edgeRe = new RegExp(
     `^\\s*//\\s*@edge\\s+"?([A-Za-z0-9_]+)"?\\s+"?[A-Za-z0-9_]+"?\\s+"?([A-Za-z0-9_]+)"?\\s`
@@ -398,7 +528,25 @@ export function deleteTableInBlock(
       if (em[1] === name || em[2] === name) toDelete.add(i);
       continue;
     }
-    if (/^\s*Ref\s*:/i.test(lines[i]) && refRe.test(lines[i])) toDelete.add(i);
+    if (/^\s*\/\//.test(lines[i])) continue;
+    if (relLineRe.test(lines[i]) && refRe.test(lines[i])) {
+      toDelete.add(i);
+      continue;
+    }
+    lines[i] = dropInlineRefTo(lines[i], name);
+  }
+  // un `Ref { … }` que se quedó sin relaciones se elimina entero
+  for (let i = start; i <= end && i < lines.length; i++) {
+    if (toDelete.has(i) || !/^\s*Ref\b[^:\n{]*\{\s*$/i.test(lines[i])) continue;
+    let j = i + 1;
+    let emptied = false;
+    while (j <= end && j < lines.length && (toDelete.has(j) || !lines[j].trim())) {
+      if (toDelete.has(j)) emptied = true;
+      j++;
+    }
+    if (emptied && j < lines.length && /^\s*\}\s*$/.test(lines[j])) {
+      for (let k = i; k <= j; k++) toDelete.add(k);
+    }
   }
   for (const i of [...toDelete].sort((a, b) => b - a)) lines.splice(i, 1);
   return true;
@@ -473,9 +621,11 @@ export function setColumnTypeInBlock(
   return false;
 }
 
-// Cambia el operador de cardinalidad de una relación (<, >, -, <>). Busca tanto
-// la forma independiente (`Ref: a.c > b.c`) como la inline dentro de la columna
-// de origen (`c tipo [ref: > b.c]`). Muta lines. Devuelve false si no la halla.
+// Cambia el operador de cardinalidad de una relación (<, >, -, <>). Reescribe
+// la forma independiente (`Ref: a.c > b.c`) y la inline dentro de la columna de
+// origen (`c tipo [ref: > b.c]`); si la misma relación está declarada de las dos
+// formas, cambia ambas para no dejar dos aristas con operadores distintos.
+// Muta lines. Devuelve false si no la halla.
 export function setRefOpInBlock(
   lines: string[],
   start: number,
@@ -488,15 +638,16 @@ export function setRefOpInBlock(
     efc = esc(ref.fromCol),
     et = esc(ref.to),
     etc = esc(ref.toCol);
-  // 1) forma independiente: a.c OP b.c (con o sin "Ref:")
+  let changed = false;
+  // 1) forma independiente: a.c OP b.c (con o sin "Ref:" / "Ref nombre:")
   const standalone = new RegExp(
-    `^(\\s*(?:Ref:\\s*)?"?${ef}"?\\.${efc}\\s*)(<>|>|<|-)(\\s*"?${et}"?\\.${etc})`
+    `^(\\s*(?:[Rr][Ee][Ff]\\b[^:\\n]*:\\s*)?"?${ef}"?\\.${efc}\\s*)(<>|>|<|-)(\\s*"?${et}"?\\.${etc})`
   );
   for (let i = start; i <= end && i < lines.length; i++) {
     if (/^\s*\/\/\s*@/.test(lines[i])) continue;
     if (standalone.test(lines[i])) {
       lines[i] = lines[i].replace(standalone, `$1${newOp}$3`);
-      return true;
+      changed = true;
     }
   }
   // 2) inline en la columna de origen dentro de la tabla `from`
@@ -511,11 +662,11 @@ export function setRefOpInBlock(
     for (let i = decl + 1; i < close; i++) {
       if (colRe.test(lines[i]) && inlineRe.test(lines[i])) {
         lines[i] = lines[i].replace(inlineRe, `$1${newOp}$3`);
-        return true;
+        changed = true;
       }
     }
   }
-  return false;
+  return changed;
 }
 
 // ---- posiciones / vista persistidas como comentarios ----

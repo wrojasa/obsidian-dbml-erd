@@ -2,6 +2,31 @@
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.22] - 2026-11-09
+
+### Fixed
+
+- **Long column names overlapped the type and the `NN` badge** ([#1](https://github.com/wrojasa/obsidian-dbml-erd/pull/1), thanks [@lucabersel](https://github.com/lucabersel)): tables used a fixed 216 px width. Each table is now as wide as its header and its widest row (name, key/link icon, type and `NN` badge), with 216 px as the minimum, and ELK ports, rendering and edge routing use that per-table width.
+- **Routing between tables of different widths**: after moving a table, two tables side by side were treated as stacked when one was much wider than the other, so the line wrapped around the target table. Tables now count as stacked only when they really overlap horizontally.
+- **🔑/🔗 icon position**: the icon was placed with an estimate of 7 px per character, so it could overlap a long bold name or the type. It now uses the same measured width that the table reserved for it.
+- **Rename/delete table hit the wrong table**: locating a table's declaration matched any earlier line that merely *started* with its name, so renaming or deleting `user` from the canvas modified `user_role` (or a `user_id` column) when that was declared first. The declaration must now end at the name (`Table user` vs `Table user_role`) or open the `{`; header color edits follow the same rule.
+- **Delete table left dangling relationships**: inline `ref:` settings in other tables that point at the deleted table are now removed (the column stays), as are named `Ref name:` lines, the short `a.col > b.col` form and `Ref { … }` blocks left empty. The plugin silently ignored those leftovers, but dbdiagram.io rejected the block.
+- **FK icon with `<`**: the 🔗 icon (and the row width reserved for it) now goes on the "many" column of the relationship. With `a.id < b.a_id` it used to land on the PK and leave the real FK without an icon.
+- **Primary-key FKs drawn as optional**: a `pk` column cannot be NULL, so the "one" end of its relationship now gets a bar even without an explicit `not null` (1:1 on a PK, members of a composite PK).
+- **Change relationship type with duplicate declarations**: when a relationship is declared both inline and with `Ref:`, both are rewritten; previously only the `Ref:` line changed and two edges appeared. Named `Ref name:` relationships can now be changed too.
+- **Parser robustness**:
+  - The `Table` keyword is accepted in any case; `table foo {` no longer disappears.
+  - Unnamed `TableGroup {`, `enum {`, `Note {` and `Project {` blocks no longer render as ghost tables, long-form `Ref { … }` relationships are read, and text inside named sticky notes, enums and table groups is no longer scanned for relationships.
+  - `/* … */` block comments are ignored.
+  - A BOM or a non-breaking space before `Table` no longer drops the table.
+  - Notes: an apostrophe inside a note no longer truncates it, double-quoted notes are recognized, and `Note: '''…'''` multi-line notes or `Note { … }` blocks inside a table no longer create ghost columns.
+  - Note text, quoted `default:` values and a ref target named `pk` are no longer read as `pk`, `not null` or `ref:` settings.
+  - `not null` is detected with any whitespace between the words, and a column named `indexes` is kept.
+
+### Changed
+
+- Text measurement for table widths uses the active window's document (`activeDocument`), as Obsidian recommends for pop-out windows, with one measuring canvas per window.
+
 ## [0.1.21] - 2026-07-07
 
 ### Changed
