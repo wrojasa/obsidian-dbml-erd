@@ -24,9 +24,17 @@ export interface Ref {
   toCol: string;
   op: Cardinality;
 }
+// Área de trabajo: un `TableGroup` con sus tablas miembro (solo las que
+// existen, sin repetir y en el orden del texto) y su color opcional.
+export interface Group {
+  name: string;
+  color?: string;
+  tables: string[];
+}
 export interface Model {
   tables: Table[];
   refs: Ref[];
+  groups: Group[];
 }
 
 // Palabra clave `Table` sin distinguir mayúsculas (como en dbdiagram.io), sin
@@ -273,6 +281,11 @@ export function parseDBML(input: string): Model {
     declRe.lastIndex = closeIdx + 1; // no re-escanear dentro del cuerpo
   }
 
+  // Áreas de trabajo: `TableGroup nombre [color: #hex] { tabla … }`. Se leen
+  // antes que los demás bloques para que su cuerpo (que puede llevar settings
+  // con `:`) quede fuera del escaneo de relaciones.
+  const groups = parseGroups(src, tables, bodies);
+
   // Bloques con nombre que no son tablas (`enum x {`, `TableGroup g {`,
   // `Note n {`, `Project p {`): su contenido no debe leerse como relaciones.
   // `Ref nombre { … }` sí contiene relaciones y no se excluye.
@@ -324,7 +337,72 @@ export function parseDBML(input: string): Model {
     if (c) c.fk = true;
   }
 
-  return { tables, refs: validRefs };
+  return { tables, refs: validRefs, groups };
+}
+
+// Lee los `TableGroup` con nombre y registra sus cuerpos en `bodies` para que
+// no se escaneen como relaciones. Reglas: la palabra clave no distingue
+// mayúsculas; el color sale de `color: #rgb|#rrggbb`; cada línea con un nombre
+// de tabla es un miembro (también `esquema.tabla`, del que se toma la tabla);
+// se ignoran notas, líneas vacías y nombres inexistentes; una tabla pertenece
+// solo a la primera área que la lista; un nombre de área repetido se ignora;
+// un área sin miembros válidos no se devuelve.
+function parseGroups(
+  src: string,
+  tables: Table[],
+  bodies: [number, number][]
+): Group[] {
+  const known = new Set(tables.map((t) => t.name));
+  const taken = new Set<string>();
+  const names = new Set<string>();
+  const out: Group[] = [];
+  const re =
+    /(?:^|\n)[ \t ]*TableGroup[ \t ]+"?([A-Za-z0-9_]+)"?[ \t ]*(?:\[([^\]\n]*)\])?\s*\{/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    const idx = m.index;
+    if (bodies.some(([s, e]) => idx >= s && idx < e)) continue;
+    const closeIdx = matchBrace(src, m.index + m[0].length - 1);
+    if (closeIdx < 0) continue;
+    bodies.push([idx, closeIdx + 1]);
+    re.lastIndex = closeIdx + 1;
+    const name = m[1];
+    if (names.has(name)) continue;
+    names.add(name);
+    const cm = (m[2] || "").match(/color:\s*(#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?)\b/i);
+    const body = src.slice(m.index + m[0].length, closeIdx);
+    const members: string[] = [];
+    let depth = 0; // salta sub-bloques como `Note { … }`
+    for (let line of body.split("\n")) {
+      line = line.trim();
+      if (depth > 0) {
+        depth += countBraces(line);
+        continue;
+      }
+      if (/^note\s*\{/i.test(line)) {
+        depth = countBraces(line);
+        continue;
+      }
+      const mm = line.match(/^"?(?:[A-Za-z0-9_]+"?\."?)?([A-Za-z0-9_]+)"?$/);
+      if (!mm) continue;
+      const t = mm[1];
+      if (!known.has(t) || taken.has(t)) continue;
+      taken.add(t);
+      members.push(t);
+    }
+    if (members.length)
+      out.push({ name, color: cm ? cm[1] : undefined, tables: members });
+  }
+  return out;
+}
+
+// Áreas colapsadas guardadas en el bloque como `// @group <nombre> collapsed`.
+export function parseGroupState(src: string): Set<string> {
+  const out = new Set<string>();
+  const re = /\/\/[ \t]*@group[ \t]+"?([A-Za-z0-9_]+)"?[ \t]+collapsed\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) out.add(m[1]);
+  return out;
 }
 
 // Reemplaza coincidencias de re en line solo FUERA de cadenas entre comillas
@@ -395,6 +473,45 @@ function esc(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Bloques que no son tablas (`TableGroup`, `enum`, `Note`, `Project`, `Ref`,
+// `indexes`) dentro del rango, como [tipo en minúsculas, línea de apertura,
+// línea de cierre]. Las llaves se cuentan sin las cadenas entre comillas
+// simples, así `Note: 'a {'` no abre nada.
+interface LineBlock {
+  kind: string;
+  open: number;
+  close: number;
+}
+function scanNonTableBlocks(
+  lines: string[],
+  start: number,
+  end: number
+): LineBlock[] {
+  const out: LineBlock[] = [];
+  const head = /^\s*(TableGroup|enum|Note|Project|Ref|indexes)\b[^{]*\{/i;
+  const last = Math.min(end, lines.length - 1);
+  for (let i = start; i <= last; i++) {
+    const plain = lines[i].replace(/'[^']*'/g, "");
+    const m = plain.match(head);
+    if (!m) continue;
+    let depth = countBraces(plain);
+    let j = i;
+    while (depth > 0 && j < last) {
+      j++;
+      depth += countBraces(lines[j].replace(/'[^']*'/g, ""));
+    }
+    out.push({ kind: m[1].toLowerCase(), open: i, close: j });
+    i = j;
+  }
+  return out;
+}
+
+function linesInBlocks(blocks: LineBlock[]): Set<number> {
+  const s = new Set<number>();
+  for (const b of blocks) for (let i = b.open; i <= b.close; i++) s.add(i);
+  return s;
+}
+
 // localiza [lineaDeclaracion, lineaCierre] de una tabla dentro del rango del bloque.
 // El conteo de llaves ignora las que aparezcan dentro de cadenas entre comillas.
 function findTableRange(
@@ -411,8 +528,12 @@ function findTableRange(
   const declRe = new RegExp(
     `^\\s*(?:${TABLE_KW}\\s+"?${e}"?(?![A-Za-z0-9_])|"?${e}"?\\s*(?:as\\s+\\w+\\s*)?(?:\\[[^\\]]*\\]\\s*)?(?:\\{|$))`
   );
+  // Las líneas de miembro de un `TableGroup` (`  pedido`) parecen la forma
+  // corta de una declaración: se saltan los cuerpos de bloques que no son tablas.
+  const skip = linesInBlocks(scanNonTableBlocks(lines, start, end));
   let decl = -1;
   for (let i = start; i <= end && i < lines.length; i++) {
+    if (skip.has(i)) continue;
     if (declRe.test(lines[i])) {
       decl = i;
       break;
@@ -469,7 +590,27 @@ export function renameTableInBlock(
     }
     lines[i] = replaceOutsideStrings(lines[i], refRe, `${newName}.`);
   }
+  // la tabla también figura como miembro en su `TableGroup`
+  const member = memberLineRe(oldName);
+  for (const i of groupMemberLines(lines, start, end)) {
+    if (member.test(lines[i])) lines[i] = lines[i].replace(member, `$1${newName}$2`);
+  }
   return true;
+}
+
+// Línea de miembro de un `TableGroup`: el nombre solo, con `esquema.` opcional.
+function memberLineRe(table: string): RegExp {
+  return new RegExp(`^(\\s*(?:"?[A-Za-z0-9_]+"?\\.)?)"?${esc(table)}"?(\\s*)$`);
+}
+
+// Índices de las líneas interiores de los cuerpos `TableGroup` del rango.
+function groupMemberLines(lines: string[], start: number, end: number): number[] {
+  const out: number[] = [];
+  for (const b of scanNonTableBlocks(lines, start, end)) {
+    if (b.kind !== "tablegroup") continue;
+    for (let i = b.open + 1; i < b.close; i++) out.push(i);
+  }
+  return out;
 }
 
 // Quita de los settings de una columna el `ref:` inline que apunta a `table`.
@@ -510,6 +651,10 @@ export function deleteTableInBlock(
   const e = esc(name);
   const toDelete = new Set<number>();
   for (let i = decl; i <= close; i++) toDelete.add(i);
+  // también deja de ser miembro de su `TableGroup` (el área queda aunque se vacíe)
+  const member = memberLineRe(name);
+  for (const i of groupMemberLines(lines, start, end))
+    if (member.test(lines[i])) toDelete.add(i);
   const refRe = new RegExp(`\\b${e}\\.[A-Za-z0-9_]+`);
   const relLineRe =
     /^\s*(?:Ref\b[^:\n]*:\s*)?"?[A-Za-z0-9_]+"?\.[A-Za-z0-9_]+\s*(?:<>|>|<|-)\s*"?[A-Za-z0-9_]+"?\.[A-Za-z0-9_]+/i;

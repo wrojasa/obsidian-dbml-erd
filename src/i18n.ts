@@ -53,6 +53,11 @@ const en: Dict = {
   // modals
   cancel: "Cancel",
   save: "Save",
+  // areas (TableGroup)
+  collapseArea: "Collapse area",
+  expandArea: "Expand area",
+  areaOneTable: "1 table",
+  areaTables: "{n} tables",
   // settings
   settingsLanguage: "Language",
   settingsLanguageDesc: "Interface language for menus, dialogs and notices.",
@@ -94,6 +99,10 @@ const es: Dict = {
   tableNotFound: 'DBML ERD: no se encontró la tabla "{name}".',
   cancel: "Cancelar",
   save: "Guardar",
+  collapseArea: "Colapsar área",
+  expandArea: "Expandir área",
+  areaOneTable: "1 tabla",
+  areaTables: "{n} tablas",
   settingsLanguage: "Idioma",
   settingsLanguageDesc:
     "Idioma de la interfaz para menús, diálogos y avisos.",

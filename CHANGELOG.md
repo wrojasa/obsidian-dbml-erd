@@ -2,6 +2,26 @@
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.0] - 2026-11-10
+
+### Added
+
+- **Work areas (table groups)**: each DBML `TableGroup name [color: #hex] { table … }` is drawn as an area, a box with a colored header bar and a light background that wraps its tables.
+  - The ELK layout treats each area as a container, so its tables are placed together and areas don't overlap. The first layout of a diagram with areas takes a little longer (about 210 ms instead of 135 ms for 120 tables in 10 areas) and is cached as before.
+  - Dragging an area by its header bar moves all its tables; the area grows or shrinks as you drag one of its tables.
+  - ▾ / ▸ collapses or expands an area without recomputing the layout. A collapsed area shows its name and table count. Relationships to its tables connect to the collapsed box (merged when several go to the same column), relationships inside it are hidden, and a cardinality mark is kept only when all merged relationships agree. Hand-edited routes touching a collapsed area are kept and come back when it is expanded.
+  - The collapsed state is saved in the block as `// @group <area> collapsed`.
+  - A table belongs to the first area that lists it; names that don't match a table are ignored, and an area without valid tables is not drawn.
+- **Tests**: `npm test` runs parser, block-mutator, work-area and layout tests with Node's built-in runner, with no new dependencies.
+
+### Fixed
+
+- Renaming, deleting, retyping a column or changing the cardinality from the canvas no longer mistakes a `TableGroup` member line (`  orders`) declared before the table for the table itself. Renaming a table also renames it inside its `TableGroup`, and deleting a table removes it from the group.
+
+### Unchanged
+
+- Diagrams without `TableGroup` render exactly as in 0.1.22.
+
 ## [0.1.22] - 2026-11-09
 
 ### Fixed

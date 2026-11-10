@@ -80,6 +80,47 @@
   text-anchor: middle;
 }
 
+/* áreas de trabajo (TableGroup): el color llega por --dbml-area-color */
+.dbml-area-bg {
+  fill: var(--dbml-area-color);
+  fill-opacity: 0.07;
+  stroke: var(--dbml-area-color);
+  stroke-opacity: 0.55;
+  stroke-width: 1;
+}
+.dbml-area-head {
+  fill: var(--dbml-area-color);
+  cursor: grab;
+}
+.dbml-area-collapsed {
+  cursor: grab;
+}
+.dbml-area-body {
+  fill: var(--background-secondary);
+  stroke: var(--dbml-area-color);
+  stroke-width: 1;
+}
+.dbml-area-txt {
+  fill: var(--dbml-area-txt, var(--text-on-accent));
+  font-weight: 700;
+  font-size: 12.5px;
+  pointer-events: none;
+}
+.dbml-area-toggle {
+  fill: var(--dbml-area-txt, var(--text-on-accent));
+  font-size: 11px;
+  pointer-events: none;
+}
+.dbml-area-toggle-hit {
+  fill: transparent;
+  cursor: pointer;
+}
+.dbml-area-count {
+  fill: var(--text-muted);
+  font-size: 11px;
+  pointer-events: none;
+}
+
 /* aristas */
 .dbml-edge {
   fill: none;

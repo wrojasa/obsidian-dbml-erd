@@ -6,7 +6,8 @@ import type {
   ElkPort,
   ElkExtendedEdge,
 } from "elkjs/lib/elk-api";
-import type { Model } from "./parser";
+import type { Model, Group } from "./parser";
+import { AREA_PAD, AREA_PAD_TOP, GROUP_NODE_PREFIX } from "./areas";
 
 export const ROW_H = 28;
 export const HEAD_H = 36;
@@ -55,6 +56,12 @@ export function colNameWidth(c: Model["tables"][number]["cols"][number]): number
   return measureText(c.name, c.pk ? COL_FONT_BOLD : COL_FONT);
 }
 
+// Ancho del nombre de un área en su barra (misma fuente que .dbml-area-txt).
+const AREA_FONT = "700 12.5px sans-serif";
+export function areaNameWidth(name: string): number {
+  return measureText(name, AREA_FONT);
+}
+
 // ancho de tabla: NODE_W, o más si el nombre de la tabla o alguna fila
 // (nombre + icono + tipo + badge NN) lo necesita para no solaparse.
 export function tableWidth(t: Model["tables"][number]): number {
@@ -86,6 +93,9 @@ export interface EdgePath {
 export interface LayoutResult {
   nodes: Record<string, NodePos>;
   edges: EdgePath[]; // mismo orden que model.refs
+  // recuadro inicial de cada área según ELK (coordenadas absolutas); el render
+  // lo recalcula siempre a partir de las tablas, esto sirve para pruebas
+  groups?: Record<string, NodePos>;
 }
 
 // ELK (~1.6 MB) se carga perezosamente en el primer layout: el import()
@@ -145,16 +155,23 @@ export async function computeLayout(model: Model): Promise<LayoutResult> {
     targets: [`t${i}_w`],
   }));
 
+  const rootOptions = {
+    "elk.algorithm": "layered",
+    "elk.direction": "RIGHT",
+    "elk.edgeRouting": "ORTHOGONAL",
+    "elk.layered.spacing.nodeNodeBetweenLayers": "120",
+    "elk.spacing.nodeNode": "50",
+    "elk.spacing.edgeNode": "25",
+  };
+
+  // Con áreas, cada una es un contenedor de sus tablas. Sin áreas, el grafo es
+  // exactamente el de siempre (mismos nodos, opciones y lectura del resultado).
+  const groups = (model.groups ?? []).filter((g) => g.tables.length > 0);
+  if (groups.length) return computeGroupedLayout(model, groups, children, edges, rootOptions);
+
   const graph: ElkNode = {
     id: "root",
-    layoutOptions: {
-      "elk.algorithm": "layered",
-      "elk.direction": "RIGHT",
-      "elk.edgeRouting": "ORTHOGONAL",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "120",
-      "elk.spacing.nodeNode": "50",
-      "elk.spacing.edgeNode": "25",
-    },
+    layoutOptions: rootOptions,
     children,
     edges,
   };
@@ -183,6 +200,87 @@ export async function computeLayout(model: Model): Promise<LayoutResult> {
     pts: byId["e" + i] ?? [],
   }));
   return { nodes, edges: edgePaths };
+}
+
+// Layout con áreas: cada `TableGroup` es un nodo contenedor (`group:<nombre>`)
+// con sus tablas como hijos, y la raíz usa INCLUDE_CHILDREN para que ELK
+// ubique y rutee todo el grafo en una sola corrida. ELK devuelve los hijos
+// relativos a su contenedor y cada arista relativa a `edge.container`; aquí
+// todo se pasa a coordenadas absolutas, así el resto del plugin recibe el
+// mismo formato que sin áreas.
+async function computeGroupedLayout(
+  model: Model,
+  groups: Group[],
+  tableNodes: ElkNode[],
+  edges: ElkExtendedEdge[],
+  rootOptions: Record<string, string>
+): Promise<LayoutResult> {
+  const byName = new Map(tableNodes.map((n) => [n.id, n]));
+  const inGroup = new Set<string>();
+  const groupNodes: ElkNode[] = groups.map((g) => {
+    const kids: ElkNode[] = [];
+    for (const t of g.tables) {
+      const n = byName.get(t);
+      if (!n || inGroup.has(t)) continue;
+      inGroup.add(t);
+      kids.push(n);
+    }
+    return {
+      id: GROUP_NODE_PREFIX + g.name,
+      layoutOptions: {
+        ...rootOptions,
+        "elk.padding": `[top=${AREA_PAD_TOP},left=${AREA_PAD},bottom=${AREA_PAD},right=${AREA_PAD}]`,
+      },
+      children: kids,
+    };
+  });
+  const graph: ElkNode = {
+    id: "root",
+    layoutOptions: { ...rootOptions, "elk.hierarchyHandling": "INCLUDE_CHILDREN" },
+    children: [...groupNodes, ...tableNodes.filter((n) => !inGroup.has(n.id))],
+    edges,
+  };
+
+  const res = await (await getElk()).layout(graph);
+  const abs = new Map<string, Pt>([["root", { x: 0, y: 0 }]]);
+  const nodes: Record<string, NodePos> = {};
+  const groupBoxes: Record<string, NodePos> = {};
+  const walk = (n: ElkNode, ox: number, oy: number) => {
+    for (const c of n.children ?? []) {
+      const x = ox + (c.x ?? 0);
+      const y = oy + (c.y ?? 0);
+      abs.set(c.id, { x, y });
+      const box = { x, y, w: c.width ?? 0, h: c.height ?? 0 };
+      if (c.id.startsWith(GROUP_NODE_PREFIX)) {
+        groupBoxes[c.id.slice(GROUP_NODE_PREFIX.length)] = box;
+        walk(c, x, y);
+      } else {
+        nodes[c.id] = box;
+      }
+    }
+  };
+  walk(res, 0, 0);
+  // las aristas pueden quedar en el arreglo `edges` de un contenedor
+  const byId: Record<string, Pt[]> = {};
+  const collect = (n: ElkNode) => {
+    for (const e of (n.edges ?? []) as ElkExtendedEdge[]) {
+      const sec = e.sections?.[0];
+      const o = abs.get(e.container ?? n.id) ?? { x: 0, y: 0 };
+      byId[e.id] = sec
+        ? [sec.startPoint, ...(sec.bendPoints ?? []), sec.endPoint].map((p) => ({
+            x: p.x + o.x,
+            y: p.y + o.y,
+          }))
+        : [];
+    }
+    for (const c of n.children ?? []) collect(c);
+  };
+  collect(res);
+  return {
+    nodes,
+    edges: model.refs.map((_, i) => ({ pts: byId["e" + i] ?? [] })),
+    groups: groupBoxes,
+  };
 }
 
 function port(id: string, x: number, y: number, side: string): ElkPort {

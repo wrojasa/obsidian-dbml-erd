@@ -25,6 +25,7 @@ import {
   parseView,
   parseSize,
   parseEdges,
+  parseGroupState,
 } from "./parser";
 import {
   computeLayout,
@@ -35,7 +36,21 @@ import {
   HEAD_H,
   NODE_W,
   colNameWidth,
+  areaNameWidth,
 } from "./layout";
+import {
+  AREA_HEAD_H,
+  AREA_LABEL_X,
+  EdgeEnd,
+  Mark,
+  Rect,
+  VisibleEdge,
+  areaBox,
+  collapsedBox,
+  groupOfMap,
+  refMarks,
+  visibleEdges,
+} from "./areas";
 
 const NS = "http://www.w3.org/2000/svg";
 
@@ -113,7 +128,7 @@ export default class DbmlErdPlugin extends Plugin {
       // de disposición; al ignorarlas en la clave, un re-render por guardado
       // reusa el layout cacheado y se renderiza sin pausa async (sin parpadeo).
       const layoutKey = source
-        .replace(/^[ \t]*\/\/[ \t]*@(pos|view|size|edge)\b.*$/gm, "")
+        .replace(/^[ \t]*\/\/[ \t]*@(pos|view|size|edge|group)\b.*$/gm, "")
         .trim();
       let layout = this.layoutCache.get(layoutKey);
       if (!layout) {
@@ -131,6 +146,7 @@ export default class DbmlErdPlugin extends Plugin {
       const view = parseView(source);
       const size = parseSize(source);
       const savedEdges = parseEdges(source);
+      const collapsed = parseGroupState(source);
       // clona los nodos del layout cacheado: el Diagram (savedPos y el arrastre)
       // muta las posiciones, y la cache debe quedar prístina para otros render.
       const freshNodes: LayoutResult["nodes"] = {};
@@ -150,6 +166,7 @@ export default class DbmlErdPlugin extends Plugin {
           view: view ?? undefined,
           size: size ?? undefined,
           savedEdges,
+          collapsed,
         })
       );
     } catch (e) {
@@ -194,9 +211,18 @@ class Diagram extends MarkdownRenderChild {
   private blockEl?: HTMLElement;
   private svg: SVGSVGElement;
   private vp: SVGGElement;
+  private areaLayer: SVGGElement;
   private edgeLayer: SVGGElement;
   private nodeLayer: SVGGElement;
   private handleLayer: SVGGElement;
+  // áreas de trabajo: tabla -> área, áreas colapsadas y nodo SVG por tabla
+  // (para mover las tablas de un área sin redibujarlas)
+  private groupOf = new Map<string, string>();
+  private collapsed = new Set<string>();
+  private nodeEls = new Map<string, SVGGElement>();
+  // aristas visibles según las áreas colapsadas; se recalcula al colapsar
+  private visCache?: VisibleEdge[];
+  private static readonly AREA_DEFAULT_COLOR = "#64748b";
 
   constructor(
     parent: HTMLElement,
@@ -211,6 +237,7 @@ class Diagram extends MarkdownRenderChild {
       view?: { x: number; y: number; k: number };
       size?: { w: number; h: number };
       savedEdges?: Record<string, { x: number; y: number }[]>;
+      collapsed?: Set<string>;
     }
   ) {
     super(parent);
@@ -220,6 +247,11 @@ class Diagram extends MarkdownRenderChild {
     this.plugin = opts?.plugin;
     this.ctx = opts?.ctx;
     this.blockEl = opts?.el;
+    this.groupOf = groupOfMap(model);
+    // solo cuentan las líneas @group de áreas que existen en el modelo
+    const groupNames = new Set(model.groups.map((g) => g.name));
+    for (const n of opts?.collapsed ?? [])
+      if (groupNames.has(n)) this.collapsed.add(n);
 
     // aplica posiciones guardadas (override del layout ELK)
     if (opts?.savedPos) {
@@ -248,7 +280,16 @@ class Diagram extends MarkdownRenderChild {
       const info = this.ctx.getSectionInfo(this.blockEl);
       this.selKey = `${this.ctx.sourcePath}#${info ? info.lineStart : 0}`;
       const prev = this.plugin?.selByBlock.get(this.selKey);
-      if (prev && this.model.refs.some((r) => this.edgeKey(r) === prev))
+      // una relación hacia un área colapsada no se puede seleccionar
+      if (
+        prev &&
+        this.model.refs.some(
+          (r) =>
+            this.edgeKey(r) === prev &&
+            !this.isHidden(r.from) &&
+            !this.isHidden(r.to)
+        )
+      )
         this._selectedEdge = prev;
     }
 
@@ -265,9 +306,11 @@ class Diagram extends MarkdownRenderChild {
     this.svg = activeDocument.createElementNS(NS, "svg");
     this.svg.classList.add("dbml-erd-svg");
     this.vp = activeDocument.createElementNS(NS, "g");
+    this.areaLayer = activeDocument.createElementNS(NS, "g");
     this.edgeLayer = activeDocument.createElementNS(NS, "g");
     this.nodeLayer = activeDocument.createElementNS(NS, "g");
     this.handleLayer = activeDocument.createElementNS(NS, "g");
+    this.vp.appendChild(this.areaLayer); // áreas al fondo, bajo las líneas
     this.vp.appendChild(this.edgeLayer);
     this.vp.appendChild(this.nodeLayer);
     this.vp.appendChild(this.handleLayer); // handles por encima de todo
@@ -280,6 +323,7 @@ class Diagram extends MarkdownRenderChild {
     this.btn(bar, "−", () => this.zoom(0.87));
     this.btn(bar, "⊡", () => this.fit(true));
 
+    this.redrawAreas();
     this.drawNodes();
     this.redrawEdges();
     this.redrawHandles(); // muestra handles si se restauró una selección
@@ -314,14 +358,52 @@ class Diagram extends MarkdownRenderChild {
     return `${r.from}.${r.fromCol}->${r.to}.${r.toCol}`;
   }
 
-  // rectángulos de tabla (obstáculos) excluyendo las indicadas
+  // ---- áreas de trabajo ----
+  // ¿la tabla está dentro de un área colapsada (no se dibuja)?
+  private isHidden(table: string): boolean {
+    const g = this.groupOf.get(table);
+    return !!g && this.collapsed.has(g);
+  }
+
+  private memberRects(name: string): Rect[] {
+    const g = this.model.groups.find((x) => x.name === name);
+    if (!g) return [];
+    const out: Rect[] = [];
+    for (const t of g.tables) {
+      const p = this.pos[t];
+      if (!p) continue;
+      const cols = this.model.tables.find((x) => x.name === t)?.cols.length ?? 0;
+      out.push({ x: p.x, y: p.y, w: p.w || NODE_W, h: p.h || HEAD_H + cols * ROW_H });
+    }
+    return out;
+  }
+
+  // recuadro expandido del área (siempre derivado de sus tablas)
+  private areaBoxOf(name: string): Rect | null {
+    return areaBox(this.memberRects(name));
+  }
+
+  // recuadro compacto del área colapsada
+  private collapsedBoxOf(name: string): Rect | null {
+    const box = this.areaBoxOf(name);
+    return box ? collapsedBox(box, areaNameWidth(name)) : null;
+  }
+
+  private visibleEdgeList(): VisibleEdge[] {
+    if (!this.visCache) this.visCache = visibleEdges(this.model, this.collapsed);
+    return this.visCache;
+  }
+
+  // rectángulos visibles que una línea debe esquivar: tablas (salvo las
+  // ocultas y las indicadas) y recuadros de áreas colapsadas (salvo las indicadas)
   private tableRects(
-    ignore: string[]
+    ignore: string[],
+    ignoreAreas: string[] = []
   ): { x: number; y: number; w: number; h: number }[] {
     const ig = new Set(ignore);
     const out: { x: number; y: number; w: number; h: number }[] = [];
     for (const t of this.model.tables) {
-      if (ig.has(t.name)) continue;
+      if (ig.has(t.name) || this.isHidden(t.name)) continue;
       const p = this.pos[t.name];
       if (!p) continue;
       out.push({
@@ -330,6 +412,12 @@ class Diagram extends MarkdownRenderChild {
         w: p.w || NODE_W,
         h: p.h || HEAD_H + t.cols.length * ROW_H,
       });
+    }
+    const igA = new Set(ignoreAreas);
+    for (const name of this.collapsed) {
+      if (igA.has(name)) continue;
+      const b = this.collapsedBoxOf(name);
+      if (b) out.push(b);
     }
     return out;
   }
@@ -366,10 +454,40 @@ class Diagram extends MarkdownRenderChild {
     const A = this.pos[r.from];
     const B = this.pos[r.to];
     if (!A || !B) return null;
-    const ay = A.y + this.colRowY(r.from, r.fromCol);
-    const by = B.y + this.colRowY(r.to, r.toCol);
-    const aw = A.w || NODE_W;
-    const bw = B.w || NODE_W;
+    return this.routeEnds(
+      { x: A.x, w: A.w || NODE_W, y: A.y + this.colRowY(r.from, r.fromCol) },
+      { x: B.x, w: B.w || NODE_W, y: B.y + this.colRowY(r.to, r.toCol) },
+      [r.from, r.to],
+      []
+    );
+  }
+
+  // geometría de un extremo para el ruteo: x y ancho del rectángulo de origen
+  // y la altura del puerto (fila de la columna, o centro del área colapsada)
+  private endGeom(e: EdgeEnd): { x: number; w: number; y: number } | null {
+    if (e.kind === "table") {
+      const P = this.pos[e.table];
+      if (!P) return null;
+      return { x: P.x, w: P.w || NODE_W, y: P.y + this.colRowY(e.table, e.col) };
+    }
+    const b = this.collapsedBoxOf(e.area);
+    return b ? { x: b.x, w: b.w, y: b.y + b.h / 2 } : null;
+  }
+
+  // Z ortogonal entre dos extremos (tabla o área colapsada), con canal
+  // vertical libre de obstáculos. Es el ruteo de manhattan(), generalizado.
+  private routeEnds(
+    a: { x: number; w: number; y: number },
+    b: { x: number; w: number; y: number },
+    ignoreTables: string[],
+    ignoreAreas: string[]
+  ): { pts: Pt[]; aSide: string; bSide: string } {
+    const A = a;
+    const B = b;
+    const ay = a.y;
+    const by = b.y;
+    const aw = a.w;
+    const bw = b.w;
     const aCx = A.x + aw / 2;
     const bCx = B.x + bw / 2;
     // Si las tablas se solapan en X (apiladas), ambas salen por el mismo lado
@@ -387,15 +505,21 @@ class Diagram extends MarkdownRenderChild {
     const bx2 = bx + (bRight ? stub : -stub);
     // canal vertical base (como antes); luego se busca uno libre de colisiones.
     const baseMid = overlapX ? Math.max(ax2, bx2) : (ax2 + bx2) / 2;
-    const rects = this.tableRects([r.from, r.to]);
-    // candidatos: base, stubs y bordes ±margen de cada tabla. Se prueba el más
-    // cercano a baseMid que no cruce ninguna tabla en los 3 tramos.
+    const rects = this.tableRects(ignoreTables, ignoreAreas);
+    // candidatos: base, stubs y bordes ±margen de cada tabla visible y de cada
+    // área colapsada. Se prueba el más cercano a baseMid que no cruce ningún
+    // obstáculo en los 3 tramos.
     const margin = 22;
     const cands = [baseMid, ax2, bx2];
     for (const t of this.model.tables) {
+      if (this.isHidden(t.name)) continue;
       const p = this.pos[t.name];
       if (!p) continue;
       cands.push(p.x - margin, p.x + (p.w || NODE_W) + margin);
+    }
+    for (const name of this.collapsed) {
+      const cb = this.collapsedBoxOf(name);
+      if (cb) cands.push(cb.x - margin, cb.x + cb.w + margin);
     }
     cands.sort((u, v) => Math.abs(u - baseMid) - Math.abs(v - baseMid));
     let midX = baseMid;
@@ -503,13 +627,51 @@ class Diagram extends MarkdownRenderChild {
   // ---- dibujo de aristas ----
   // redibuja aristas: si cualquiera de sus extremos fue movido, usa manhattan
   // (posición actual); si no, conserva la ruta ELK original (esquiva).
+  // Sin áreas colapsadas, la lista visible es una arista por relación en el
+  // orden del modelo, igual que antes. Las aristas hacia áreas colapsadas
+  // (agregadas) se rutean al recuadro del área y no se pueden seleccionar.
   private redrawEdges() {
     while (this.edgeLayer.firstChild)
       this.edgeLayer.removeChild(this.edgeLayer.firstChild);
-    this.model.refs.forEach((r, i) => {
-      const pts = this.edgePts(r, i);
-      if (pts && pts.length >= 2) this.drawEdge(r, pts, this.edgeKey(r));
-    });
+    for (const ve of this.visibleEdgeList()) {
+      if (!ve.aggregated) {
+        const i = ve.refs[0];
+        const r = this.model.refs[i];
+        const pts = this.edgePts(r, i);
+        if (pts && pts.length >= 2) this.drawEdge(r, pts, this.edgeKey(r));
+        continue;
+      }
+      const a = this.endGeom(ve.from);
+      const b = this.endGeom(ve.to);
+      if (!a || !b) continue;
+      const ignT: string[] = [];
+      const ignA: string[] = [];
+      for (const e of [ve.from, ve.to]) {
+        if (e.kind === "table") ignT.push(e.table);
+        else ignA.push(e.area);
+      }
+      const route = this.routeEnds(a, b, ignT, ignA);
+      this.drawPlainEdge(route.pts, ve.fromMark, ve.toMark);
+    }
+  }
+
+  // arista agregada hacia un área colapsada: sin selección ni handles; cada
+  // extremo lleva marca solo si las relaciones unificadas coinciden
+  private drawPlainEdge(pts: Pt[], fromMark: Mark | null, toMark: Mark | null) {
+    const path = activeDocument.createElementNS(NS, "path");
+    path.setAttribute("d", this.roundedPath(this.orthogonalize(pts)));
+    path.classList.add("dbml-edge", "aggregated");
+    this.edgeLayer.appendChild(path);
+    const s = pts[0];
+    const e = pts[pts.length - 1];
+    if (fromMark)
+      this.edgeLayer.appendChild(
+        this.marker(s.x, s.y, this.endpointSide(pts, "start"), fromMark.kind, fromMark.optional)
+      );
+    if (toMark)
+      this.edgeLayer.appendChild(
+        this.marker(e.x, e.y, this.endpointSide(pts, "end"), toMark.kind, toMark.optional)
+      );
   }
 
   // ruta actual de una arista, por prioridad:
@@ -602,24 +764,6 @@ class Diagram extends MarkdownRenderChild {
     ];
   }
 
-  // localiza la columna FK (lado muchos) y si es nullable -> el lado uno es opcional
-  private fkOptional(r: Ref): boolean {
-    let table: string, col: string;
-    if (r.op === "<") {
-      table = r.to;
-      col = r.toCol; // en <, el lado muchos es 'to'
-    } else {
-      table = r.from;
-      col = r.fromCol; // en >, -, el FK está en 'from'
-    }
-    const t = this.model.tables.find((t) => t.name === table);
-    const c = t?.cols.find((c) => c.name === col);
-    // FK nullable => opcional; si no se halla, mandatorio. Una columna PK no
-    // admite NULL aunque el bloque no diga `not null` (p. ej. FK que es PK en
-    // un 1:1, o miembro de una PK compuesta).
-    return c ? !(c.nn || c.pk) : false;
-  }
-
   // Convierte una polilínea libre en una ortogonal (solo tramos H/V) insertando
   // un codo entre cada par de puntos que difieran en ambos ejes. Estrategia
   // "horizontal primero": el codo va en (b.x, a.y), de modo que cada punto
@@ -673,14 +817,14 @@ class Diagram extends MarkdownRenderChild {
     this.enableEdgeSelect(hit, r, key);
     const s = pts[0];
     const e = pts[pts.length - 1];
-    const fromMany = r.op === ">" || r.op === "<>";
-    const toMany = r.op === "<" || r.op === "<>";
-    const opt = this.fkOptional(r);
+    // operador -> muchos/uno; el extremo "uno" es círculo si la FK es nullable
+    // y no es PK (refMarks, compartido con las aristas hacia áreas)
+    const mk = refMarks(this.model, r);
     this.edgeLayer.appendChild(
-      this.marker(s.x, s.y, this.endpointSide(pts, "start"), fromMany ? "many" : "one", opt)
+      this.marker(s.x, s.y, this.endpointSide(pts, "start"), mk.from.kind, mk.from.optional)
     );
     this.edgeLayer.appendChild(
-      this.marker(e.x, e.y, this.endpointSide(pts, "end"), toMany ? "many" : "one", opt)
+      this.marker(e.x, e.y, this.endpointSide(pts, "end"), mk.to.kind, mk.to.optional)
     );
   }
 
@@ -814,6 +958,7 @@ class Diagram extends MarkdownRenderChild {
     );
     if (i < 0) return;
     const r = this.model.refs[i];
+    if (this.isHidden(r.from) || this.isHidden(r.to)) return;
     const key = this.selectedEdge;
     const pts = this.edgePts(r, i);
     if (!pts || pts.length < 2) return;
@@ -960,11 +1105,161 @@ class Diagram extends MarkdownRenderChild {
     });
   }
 
+  // ---- dibujo de áreas ----
+  // Cada área se redibuja desde la posición actual de sus tablas: expandida es
+  // un recuadro con barra (asa de arrastre y triángulo ▾), colapsada es un
+  // recuadro compacto (todo él es asa) con ▸, el nombre y el conteo.
+  private redrawAreas() {
+    while (this.areaLayer.firstChild)
+      this.areaLayer.removeChild(this.areaLayer.firstChild);
+    for (const grp of this.model.groups) {
+      const box = this.areaBoxOf(grp.name);
+      if (!box) continue;
+      const color = grp.color ?? Diagram.AREA_DEFAULT_COLOR;
+      const isCol = this.collapsed.has(grp.name);
+      const el = activeDocument.createElementNS(NS, "g");
+      el.classList.add("dbml-area");
+      el.style.setProperty("--dbml-area-color", color);
+      el.style.setProperty("--dbml-area-txt", this.readableText(color));
+      let handle: SVGGElement;
+      let w: number;
+      if (isCol) {
+        const cb = collapsedBox(box, areaNameWidth(grp.name));
+        w = cb.w;
+        el.classList.add("dbml-area-collapsed");
+        el.setAttribute("transform", `translate(${cb.x},${cb.y})`);
+        const body = this.rect(0, 0, cb.w, cb.h, "dbml-area-body");
+        body.setAttribute("rx", "6");
+        el.appendChild(body);
+        const n = grp.tables.length;
+        el.appendChild(
+          this.text(
+            12,
+            AREA_HEAD_H + 16,
+            n === 1 ? t("areaOneTable") : t("areaTables", { n: String(n) }),
+            "dbml-area-count"
+          )
+        );
+        handle = el;
+      } else {
+        w = box.w;
+        el.setAttribute("transform", `translate(${box.x},${box.y})`);
+        const bg = this.rect(0, 0, box.w, box.h, "dbml-area-bg");
+        bg.setAttribute("rx", "8");
+        el.appendChild(bg);
+        handle = activeDocument.createElementNS(NS, "g");
+        el.appendChild(handle);
+      }
+      // barra de encabezado: esquinas de arriba redondeadas, de abajo rectas
+      const head = this.rect(0, 0, w, AREA_HEAD_H, "dbml-area-head");
+      head.setAttribute("rx", isCol ? "6" : "8");
+      handle.appendChild(head);
+      handle.appendChild(this.rect(0, AREA_HEAD_H - 8, w, 8, "dbml-area-head"));
+      const hit = this.rect(4, 2, 20, AREA_HEAD_H - 4, "dbml-area-toggle-hit");
+      const tip = activeDocument.createElementNS(NS, "title");
+      tip.textContent = isCol ? t("expandArea") : t("collapseArea");
+      hit.appendChild(tip);
+      handle.appendChild(hit);
+      handle.appendChild(this.text(9, AREA_HEAD_H / 2 + 4, isCol ? "▸" : "▾", "dbml-area-toggle"));
+      handle.appendChild(
+        this.text(AREA_LABEL_X, AREA_HEAD_H / 2 + 4, grp.name, "dbml-area-txt")
+      );
+      this.enableAreaDrag(handle, el, grp.name);
+      this.areaLayer.appendChild(el);
+    }
+  }
+
+  // Arrastrar el asa de un área mueve todas sus tablas (también las ocultas si
+  // está colapsada). Durante el arrastre el área se traslada entera, sin
+  // redibujarla, para no perder la captura del puntero. Un toque sin arrastre
+  // sobre el triángulo colapsa o expande.
+  private enableAreaDrag(handle: SVGGElement, el: SVGGElement, name: string) {
+    handle.addEventListener("pointerdown", (ev: PointerEvent) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      const onToggle = !!(ev.target as Element).closest(".dbml-area-toggle-hit");
+      const grp = this.model.groups.find((g) => g.name === name);
+      if (!grp) return;
+      const start = grp.tables
+        .filter((tb) => this.pos[tb])
+        .map((tb) => ({ tb, x: this.pos[tb].x, y: this.pos[tb].y }));
+      const tm = /translate\(([-\d.e]+),([-\d.e]+)\)/.exec(el.getAttribute("transform") || "");
+      const bx = tm ? parseFloat(tm[1]) : 0;
+      const by = tm ? parseFloat(tm[2]) : 0;
+      const sx = ev.clientX;
+      const sy = ev.clientY;
+      let moved = false;
+      try {
+        handle.setPointerCapture(ev.pointerId);
+      } catch {
+        /* noop */
+      }
+      const mv = (e: PointerEvent) => {
+        if (!moved && Math.hypot(e.clientX - sx, e.clientY - sy) < 4) return;
+        moved = true;
+        const dx = (e.clientX - sx) / this.view.k;
+        const dy = (e.clientY - sy) / this.view.k;
+        for (const s of start) {
+          this.pos[s.tb].x = s.x + dx;
+          this.pos[s.tb].y = s.y + dy;
+          this.movedTables.add(s.tb);
+          this.nodeEls
+            .get(s.tb)
+            ?.setAttribute("transform", `translate(${this.pos[s.tb].x},${this.pos[s.tb].y})`);
+        }
+        el.setAttribute("transform", `translate(${bx + dx},${by + dy})`);
+        this.redrawEdges();
+        if (this.selectedEdge) this.redrawHandles();
+      };
+      const up = (e: PointerEvent) => {
+        handle.removeEventListener("pointermove", mv);
+        handle.removeEventListener("pointerup", up);
+        handle.removeEventListener("pointercancel", up);
+        try {
+          handle.releasePointerCapture(e.pointerId);
+        } catch {
+          /* noop */
+        }
+        if (moved) {
+          this.redrawAreas();
+          this.scheduleSaveLayout();
+        } else if (onToggle && e.type !== "pointercancel") {
+          e.stopPropagation();
+          this.toggleArea(name);
+        }
+      };
+      handle.addEventListener("pointermove", mv);
+      handle.addEventListener("pointerup", up);
+      handle.addEventListener("pointercancel", up);
+    });
+  }
+
+  // Colapsa o expande un área: redibuja al instante (sin ELK) y guarda la
+  // línea `// @group <nombre> collapsed` en el bloque.
+  private toggleArea(name: string) {
+    if (this.collapsed.has(name)) this.collapsed.delete(name);
+    else this.collapsed.add(name);
+    this.visCache = undefined;
+    if (this.selectedEdge) {
+      const r = this.model.refs.find((x) => this.edgeKey(x) === this.selectedEdge);
+      if (r && (this.isHidden(r.from) || this.isHidden(r.to))) this.selectedEdge = undefined;
+    }
+    this.redrawAreas();
+    this.drawNodes();
+    this.redrawEdges();
+    this.redrawHandles();
+    this.scheduleSaveLayout();
+  }
+
   // ---- dibujo de nodos ----
+  // Redibujable: limpia la capa y omite las tablas de áreas colapsadas.
   private drawNodes() {
+    while (this.nodeLayer.firstChild)
+      this.nodeLayer.removeChild(this.nodeLayer.firstChild);
+    this.nodeEls.clear();
     this.model.tables.forEach((t) => {
       const P = this.pos[t.name];
-      if (!P) return;
+      if (!P || this.isHidden(t.name)) return;
       const g = activeDocument.createElementNS(NS, "g");
       g.classList.add("dbml-node");
       g.setAttribute("transform", `translate(${P.x},${P.y})`);
@@ -1040,6 +1335,7 @@ class Diagram extends MarkdownRenderChild {
       });
 
       this.enableDrag(g, t.name);
+      this.nodeEls.set(t.name, g);
       this.nodeLayer.appendChild(g);
     });
   }
@@ -1159,6 +1455,8 @@ class Diagram extends MarkdownRenderChild {
           "transform",
           `translate(${this.pos[name].x},${this.pos[name].y})`
         );
+        // su área crece o se achica con ella
+        if (this.groupOf.has(name)) this.redrawAreas();
         this.redrawEdges();
         if (this.selectedEdge) this.redrawHandles();
       };
@@ -1402,7 +1700,7 @@ class Diagram extends MarkdownRenderChild {
       const [open, close] = range;
       const body = lines
         .slice(open + 1, close)
-        .filter((l) => !/^\s*\/\/\s*@(pos|view|size|edge)\b/.test(l));
+        .filter((l) => !/^\s*\/\/\s*@(pos|view|size|edge|group)\b/.test(l));
       // solo persiste posición de tablas que el usuario movió (las demás
       // siguen con auto-layout); la vista siempre se persiste.
       const posLines = this.model.tables
@@ -1434,11 +1732,17 @@ class Diagram extends MarkdownRenderChild {
             pts.map((p) => `${Math.round(p.x)} ${Math.round(p.y)}`).join(" ")
           );
         });
+      // áreas colapsadas que existen en el modelo (las de áreas renombradas o
+      // borradas en el texto se descartan solas)
+      const groupLines = this.model.groups
+        .filter((g) => this.collapsed.has(g.name))
+        .map((g) => `// @group ${g.name} collapsed`);
       return [
         ...lines.slice(0, open + 1),
         ...body,
         ...posLines,
         ...edgeLines,
+        ...groupLines,
         viewLine,
         ...sizeLines,
         ...lines.slice(close),
@@ -1590,9 +1894,20 @@ class Diagram extends MarkdownRenderChild {
       minY = 1e9,
       maxX = -1e9,
       maxY = -1e9;
+    // encuadra tablas visibles y áreas (expandidas o colapsadas)
+    const boxes: Rect[] = [];
     for (const t of this.model.tables) {
       const P = this.pos[t.name];
-      if (!P) continue;
+      if (!P || this.isHidden(t.name)) continue;
+      boxes.push(P);
+    }
+    for (const g of this.model.groups) {
+      const b = this.collapsed.has(g.name)
+        ? this.collapsedBoxOf(g.name)
+        : this.areaBoxOf(g.name);
+      if (b) boxes.push(b);
+    }
+    for (const P of boxes) {
       minX = Math.min(minX, P.x);
       minY = Math.min(minY, P.y);
       maxX = Math.max(maxX, P.x + P.w);

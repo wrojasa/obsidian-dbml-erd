@@ -27,6 +27,13 @@ You write a ` ```dbml ` block with your tables and relationships and the plugin 
 - **PK** (🔑) and **FK** (🔗) icons, **`NN`** badge for `not null` columns.
 - Per-table header color (text adjusts to white or dark depending on the background).
 
+### Work areas (table groups)
+
+- Each DBML `TableGroup` is drawn as an **area**: a box with a colored header bar and a light background that wraps its tables. The layout keeps the tables of an area together.
+- **Drag the header bar** to move the whole area with all its tables; the area grows or shrinks as you drag one of its tables.
+- Click **▾ / ▸** to **collapse** or **expand** an area. A collapsed area shows its name and table count; relationships to its tables connect to the collapsed box (merged when several go to the same column), and relationships inside the area are hidden.
+- The collapsed state is saved in the block and restored when you reopen the note.
+
 ### Canvas navigation
 
 - **Pan** (drag the empty space), **zoom** (mouse wheel), `+` / `−` / `⊡` (fit) buttons.
@@ -89,12 +96,20 @@ Ref: contract.client_id > client.client_id
 - Relationships: a `Ref: a.col > b.col` line (optionally named, `Ref fk_name: ...`), the long form `Ref { a.col > b.col }`, inline `ref: > b.col`, or the direct form `a.col <> b.col`.
 - Cardinality operators: `>` (many→one), `<` (one→many), `<>` (many↔many), `-` (one↔one).
 - Per-table header color: `Table name [headercolor: #2E7D32] { ... }`.
+- Work areas: `TableGroup name [color: #2E7D32] { table1 table2 }`, one table name per line. A table belongs to the first area that lists it; names that don't match a table are ignored.
 - Table and column notes (`Note: '...'`, `note: '...'`) are accepted and kept in the block, but not drawn in the diagram.
 - Optional `// height: N` directive (canvas height in px).
 - `//` and `/* ... */` comments.
-- `indexes { }`, `enum`, `TableGroup`, `Project` and sticky `Note` blocks are accepted and ignored.
+- `indexes { }`, `enum`, `Project` and sticky `Note` blocks are accepted and ignored.
 
-> A deliberate subset of DBML, enough for controlled schemas. It does not yet include enums, table groups or composite keys.
+```dbml
+TableGroup sales [color: #2E7D32] {
+  client
+  contract
+}
+```
+
+> A deliberate subset of DBML, enough for controlled schemas. It does not yet include enums or composite keys.
 
 ### Layout annotations (managed by the plugin)
 
@@ -104,6 +119,7 @@ The plugin stores the visual state as comments inside the block; you don't need 
 - `// @view <x> <y> <zoom>` — pan and zoom.
 - `// @size <w> <h>` — canvas size.
 - `// @edge <from> <fromCol> <to> <toCol> <x1> <y1> …` — vertices of a hand-edited route.
+- `// @group <area> collapsed` — a collapsed work area.
 
 ---
 
@@ -134,6 +150,7 @@ Paste the resulting block into a note inside ` ```dbml ` and the plugin renders 
 npm install
 npm run dev     # build with inline sourcemaps
 npm run build   # minified production build
+npm test        # parser, block mutators, work areas and layout tests
 ```
 
 Code structure:
@@ -141,7 +158,9 @@ Code structure:
 - `src/main.ts` — plugin, block rendering and the `Diagram` class (SVG, interaction, persistence).
 - `src/parser.ts` — DBML parser (subset) and block mutators (rename, types, cardinality, delete).
 - `src/layout.ts` — layout with elkjs and geometry constants.
+- `src/areas.ts` — work areas (table groups) without DOM: boxes, cardinality marks and edges to collapsed areas.
 - `src/i18n.ts` — interface strings (English/Spanish) and the `t()` lookup.
+- `test/` — tests with Node's built-in runner; `npm test` bundles the modules with esbuild first.
 - `styles.css` — styles integrated with Obsidian's theme variables.
 
 ## Release

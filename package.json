@@ -1,11 +1,12 @@
 {
   "name": "obsidian-dbml-erd",
-  "version": "0.1.22",
+  "version": "0.2.0",
   "description": "Obsidian plugin that renders dbml blocks as ERDs with orthogonal, dbdiagram.io-style routing.",
   "main": "index.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "node esbuild.config.mjs production"
+    "build": "node esbuild.config.mjs production",
+    "test": "node test/run.mjs"
   },
   "keywords": [
     "obsidian",
