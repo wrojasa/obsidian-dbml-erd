@@ -13,6 +13,13 @@ test("recuadros de área", () => {
   assert.equal(A.collapsedBox({ x: 0, y: 0, w: 1, h: 1 }, 200).w, 240);
 });
 
+test("color de un área nueva: el primero libre de la paleta", () => {
+  const m = (colors) => ({ tables: [], refs: [], groups: colors.map((c, i) => ({ name: "g" + i, color: c, tables: ["t"] })) });
+  assert.equal(A.nextAreaColor(m([])), "#20479e");
+  assert.equal(A.nextAreaColor(m(["#20479E", "#2e7d32"])), "#c62828", "sin distinguir mayúsculas");
+  assert.equal(A.nextAreaColor(m(A.AREA_PALETTE)), "#20479e", "todos en uso: el primero");
+});
+
 test("marcas de cardinalidad", () => {
   const draw = (m) => (m.kind === "many" ? "many" : m.optional ? "circle" : "bar");
   const cases = [

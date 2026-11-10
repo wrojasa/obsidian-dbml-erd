@@ -33,6 +33,7 @@ You write a ` ```dbml ` block with your tables and relationships and the plugin 
 - **Drag the header bar** to move the whole area with all its tables; the area grows or shrinks as you drag one of its tables.
 - Click **▾ / ▸** to **collapse** or **expand** an area. A collapsed area shows its name and table count; relationships to its tables connect to the collapsed box (merged when several go to the same column), and relationships inside the area are hidden.
 - The collapsed state is saved in the block and restored when you reopen the note.
+- Areas can be created, renamed, recolored and removed from the diagram, and tables moved between them (see *Interactive editing*). Dragging a table never changes its area.
 
 ### Canvas navigation
 
@@ -44,10 +45,17 @@ You write a ` ```dbml ` block with your tables and relationships and the plugin 
 
 Everything is saved back to the dbml block:
 
+- **New table** (table button in the toolbar): asks for a name and creates the table, with an `id` primary key, in the middle of the view.
 - **Table header** (click the node header) → menu:
   - Rename table… (also updates references).
   - Pick color… / Remove color.
+  - Move to area… (searchable list of areas, plus "New area…") / Remove from "area".
   - Delete table… (with confirmation dialog; removes the table and the relationships that reference it).
+- **Area header** (click the area bar, or a collapsed area) → menu:
+  - Rename area… / Pick color… / Remove color.
+  - New table in this area…
+  - Remove area… (with confirmation; its tables are kept).
+- Creating tables and changing areas keep every table where it is: the current positions are saved in the same edit, so nothing jumps.
 - **Column row** (click a column) → menu:
   - Rename column… (updates `table.col` references).
   - Change type…
@@ -159,6 +167,7 @@ Code structure:
 - `src/parser.ts` — DBML parser (subset) and block mutators (rename, types, cardinality, delete).
 - `src/layout.ts` — layout with elkjs and geometry constants.
 - `src/areas.ts` — work areas (table groups) without DOM: boxes, cardinality marks and edges to collapsed areas.
+- `src/edits.ts` — structural block edits without DOM (create tables and areas, edit areas, move tables between areas, pin positions).
 - `src/i18n.ts` — interface strings (English/Spanish) and the `t()` lookup.
 - `test/` — tests with Node's built-in runner; `npm test` bundles the modules with esbuild first.
 - `styles.css` — styles integrated with Obsidian's theme variables.

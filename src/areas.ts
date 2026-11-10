@@ -59,6 +59,16 @@ export function collapsedBox(area: Rect, nameWidth: number): Rect {
   };
 }
 
+// Paleta para áreas nuevas (la misma que sugiere la skill sql-to-dbml).
+export const AREA_PALETTE = ["#20479e", "#2e7d32", "#c62828", "#6a1b9a", "#ef6c00", "#00838f"];
+
+// Primer color de la paleta que no usa ninguna área; si todos están en uso,
+// el primero.
+export function nextAreaColor(model: Model): string {
+  const used = new Set((model.groups ?? []).map((g) => (g.color ?? "").toLowerCase()));
+  return AREA_PALETTE.find((c) => !used.has(c)) ?? AREA_PALETTE[0];
+}
+
 // tabla -> nombre de su área
 export function groupOfMap(model: Model): Map<string, string> {
   const out = new Map<string, string>();

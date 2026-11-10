@@ -2,6 +2,20 @@
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] - 2026-11-10
+
+### Added
+
+- **New table from the diagram**: a table button in the toolbar asks for a name and creates the table, with an `id integer [pk, not null]` column, in the middle of the view.
+- **Area menu**: clicking an area's header bar (or a collapsed area) opens a menu to rename it, pick or remove its color, create a new table inside it, or remove the area. Removing an area keeps its tables.
+- **Move tables between areas**: the table header menu adds "Move to area…", a searchable list of areas plus "New area…", and "Remove from «area»". A new area takes the first palette color not used by another area. A table moved into an area is placed below its tables; a table taken out is placed to the right of the area it leaves. Dragging a table still never changes its area.
+- Creating tables and areas, moving tables between areas and removing areas save the current position of every table in the same edit, so nothing jumps when the layout is recomputed. As a side effect, lines then use the plugin's router (the one used when you move tables by hand) instead of ELK's routes.
+- `src/edits.ts`: these edits are pure functions over the block lines, with no DOM or Obsidian dependency, covered by tests.
+
+### Changed
+
+- Deleting the last table of an area also removes the area and its `@group` line. In 0.2.0 the emptied area stayed in the text, where it was neither drawn nor reachable from the diagram.
+
 ## [0.2.0] - 2026-11-10
 
 ### Added

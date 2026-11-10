@@ -69,6 +69,14 @@ test("borrar una tabla la quita de su área", () => {
   assert.doesNotMatch(r.out, /pedido/);
 });
 
+test("borrar la última tabla de un área elimina el área y su @group", () => {
+  const src = "Table a {\n  id int\n}\nTable b {\n  id int\n}\nTableGroup g {\n  a\n}\nTableGroup h {\n  b\n}\n// @group g collapsed\n// @group h collapsed";
+  const r = run(src, (l, s, e) => P.deleteTableInBlock(l, s, e, "a"));
+  assert.deepEqual(r.m.groups.map((g) => g.name), ["h"]);
+  assert.doesNotMatch(r.out, /TableGroup g|@group g /);
+  assert.match(r.out, /@group h collapsed/);
+});
+
 test("miembro user_role intacto al renombrar user", () => {
   const src = "Table user_role {\n  id int\n}\nTableGroup g {\n  user_role\n  user\n}\nTable user {\n  id int\n}";
   const r = run(src, (l, s, e) => P.renameTableInBlock(l, s, e, "user", "usuario"));

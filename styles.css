@@ -190,6 +190,17 @@
 .dbml-erd-toolbar button:hover {
   border-color: var(--interactive-accent);
 }
+/* botón con ícono (nueva tabla) */
+.dbml-erd-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.dbml-erd-toolbar button svg {
+  width: 16px;
+  height: 16px;
+}
 
 /* input de color oculto fuera de pantalla (estilos estáticos en CSS, no por JS) */
 .dbml-color-input {

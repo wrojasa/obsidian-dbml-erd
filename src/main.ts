@@ -9,6 +9,8 @@ import {
   TFile,
   PluginSettingTab,
   Setting,
+  FuzzySuggestModal,
+  setIcon,
 } from "obsidian";
 import { t, setLang, Lang, LANGS } from "./i18n";
 import {
@@ -39,8 +41,20 @@ import {
   areaNameWidth,
 } from "./layout";
 import {
+  NAME_RE,
+  addGroupInBlock,
+  addTableInBlock,
+  moveTableToGroupInBlock,
+  removeGroupInBlock,
+  renameGroupInBlock,
+  setGroupColorInBlock,
+  setPositionsInBlock,
+} from "./edits";
+import {
   AREA_HEAD_H,
   AREA_LABEL_X,
+  AREA_PAD,
+  nextAreaColor,
   EdgeEnd,
   Mark,
   Rect,
@@ -322,6 +336,11 @@ class Diagram extends MarkdownRenderChild {
     this.btn(bar, "+", () => this.zoom(1.15));
     this.btn(bar, "−", () => this.zoom(0.87));
     this.btn(bar, "⊡", () => this.fit(true));
+    // nueva tabla (ícono, para no confundirse con el + del zoom)
+    const nb = bar.createEl("button");
+    setIcon(nb, "table");
+    nb.setAttribute("aria-label", t("newTable"));
+    this.registerDomEvent(nb, "click", () => this.promptNewTable());
 
     this.redrawAreas();
     this.drawNodes();
@@ -365,11 +384,12 @@ class Diagram extends MarkdownRenderChild {
     return !!g && this.collapsed.has(g);
   }
 
-  private memberRects(name: string): Rect[] {
+  private memberRects(name: string, except?: string): Rect[] {
     const g = this.model.groups.find((x) => x.name === name);
     if (!g) return [];
     const out: Rect[] = [];
     for (const t of g.tables) {
+      if (t === except) continue;
       const p = this.pos[t];
       if (!p) continue;
       const cols = this.model.tables.find((x) => x.name === t)?.cols.length ?? 0;
@@ -1223,15 +1243,197 @@ class Diagram extends MarkdownRenderChild {
         if (moved) {
           this.redrawAreas();
           this.scheduleSaveLayout();
-        } else if (onToggle && e.type !== "pointercancel") {
+        } else if (e.type === "pointercancel") {
+          // gesto abortado: nada
+        } else if (onToggle) {
           e.stopPropagation();
           this.toggleArea(name);
+        } else {
+          // toque fuera del triángulo: menú del área (mismo patrón que el
+          // encabezado de tabla, para que el Menu no se cierre al instante)
+          e.stopPropagation();
+          e.preventDefault();
+          const ev2 = e;
+          setTimeout(() => this.openAreaMenu(name, ev2), 0);
         }
       };
       handle.addEventListener("pointermove", mv);
       handle.addEventListener("pointerup", up);
       handle.addEventListener("pointercancel", up);
     });
+  }
+
+  // ---- edición de áreas y tablas desde el canvas ----
+  // Las escrituras viven en edits.ts (funciones puras); aquí solo se piden
+  // datos al usuario, se validan y se escribe en una sola operación.
+
+  private openAreaMenu(name: string, evt: MouseEvent) {
+    if (!this.plugin || !this.ctx || !this.blockEl) return;
+    const grp = this.model.groups.find((g) => g.name === name);
+    if (!grp) return;
+    const menu = new Menu();
+    menu.addItem((i) =>
+      i.setTitle(t("renameArea")).setIcon("pencil").onClick(() => this.renameArea(name))
+    );
+    menu.addItem((i) =>
+      i
+        .setTitle(t("pickColor"))
+        .setIcon("palette")
+        .onClick(() => this.pickColorFor(grp.color ?? "", (c) => this.setAreaColor(name, c)))
+    );
+    if (grp.color)
+      menu.addItem((i) =>
+        i.setTitle(t("removeColor")).setIcon("rotate-ccw").onClick(() => this.setAreaColor(name, null))
+      );
+    menu.addItem((i) =>
+      i.setTitle(t("newTableInArea")).setIcon("table").onClick(() => this.promptNewTable(name))
+    );
+    menu.addSeparator();
+    menu.addItem((i) =>
+      i
+        .setTitle(t("removeAreaMenu"))
+        .setIcon("trash-2")
+        .onClick(() =>
+          this.confirm(t("removeAreaTitle"), t("removeAreaBody", { name }), t("removeBtn"), () =>
+            this.editStructure((l, s, e) => removeGroupInBlock(l, s, e, name), {})
+          )
+        )
+    );
+    menu.showAtMouseEvent(evt);
+  }
+
+  // posiciones actuales de todas las tablas (también las ocultas en áreas
+  // colapsadas), con las indicadas reemplazadas
+  private pinsWith(extra: Record<string, Pt>): Record<string, Pt> {
+    const out: Record<string, Pt> = {};
+    for (const tb of this.model.tables) {
+      const p = this.pos[tb.name];
+      if (p) out[tb.name] = { x: p.x, y: p.y };
+    }
+    return { ...out, ...extra };
+  }
+
+  // Cambio estructural (crear o mover tablas, crear o quitar áreas): en la misma
+  // escritura fija la posición actual de todas las tablas, así ELK recalcula
+  // pero nada salta. `extra` da la posición de la tabla creada o movida.
+  private editStructure(
+    mutate: (lines: string[], start: number, end: number) => boolean,
+    extra: Record<string, Pt>
+  ) {
+    const pins = this.pinsWith(extra);
+    this.editBlock((l, s, e) => {
+      const before = l.length;
+      if (!mutate(l, s, e)) return false;
+      return setPositionsInBlock(l, s, e + (l.length - before), pins);
+    }, t("editBlockFail"));
+  }
+
+  // centro de la vista actual, en coordenadas del diagrama, para una tabla nueva
+  private viewCenterSpot(): Pt {
+    const r = this.svg.getBoundingClientRect();
+    const cx = ((r.width || 600) / 2 - this.view.x) / this.view.k;
+    const cy = ((r.height || 400) / 2 - this.view.y) / this.view.k;
+    return { x: cx - NODE_W / 2, y: cy - HEAD_H };
+  }
+
+  // debajo de la tabla más baja del área, junto al margen izquierdo del recuadro
+  private spotInArea(area: string, except?: string): Pt | undefined {
+    const rects = this.memberRects(area, except);
+    const box = areaBox(rects);
+    if (!box) return undefined;
+    const bottom = Math.max(...rects.map((r) => r.y + r.h));
+    return { x: box.x + AREA_PAD, y: bottom + 40 };
+  }
+
+  private promptNewTable(area?: string) {
+    if (!this.plugin || !this.ctx || !this.blockEl) return;
+    this.promptText(t("newTablePrompt"), "", (v) => this.createTable(v, area));
+  }
+
+  private createTable(name: string, area?: string) {
+    if (!NAME_RE.test(name)) {
+      new Notice(t("invalidName"));
+      return;
+    }
+    if (this.model.tables.some((x) => x.name === name)) {
+      new Notice(t("tableExists", { name }));
+      return;
+    }
+    const at = (area && this.spotInArea(area)) || this.viewCenterSpot();
+    this.editStructure(
+      (l, s, e) => {
+        const before = l.length;
+        if (!addTableInBlock(l, s, e, name)) return false;
+        return area ? moveTableToGroupInBlock(l, s, e + (l.length - before), name, area) : true;
+      },
+      { [name]: at }
+    );
+  }
+
+  // Mueve una tabla a un área (o la saca con null). Entra debajo de las tablas
+  // del área destino; al salir queda a la derecha del área que deja.
+  private moveTableToArea(table: string, area: string | null) {
+    const cur = this.groupOf.get(table);
+    if ((cur ?? null) === area) return;
+    let at: Pt | undefined;
+    if (area) at = this.spotInArea(area, table);
+    else if (cur) {
+      const box = this.areaBoxOf(cur);
+      if (box) at = { x: box.x + box.w + 40, y: box.y };
+    }
+    this.editStructure(
+      (l, s, e) => moveTableToGroupInBlock(l, s, e, table, area),
+      at ? { [table]: at } : {}
+    );
+  }
+
+  private createAreaWithTable(areaName: string, table: string) {
+    if (!NAME_RE.test(areaName)) {
+      new Notice(t("invalidName"));
+      return;
+    }
+    if (this.model.groups.some((g) => g.name === areaName)) {
+      new Notice(t("areaExists", { name: areaName }));
+      return;
+    }
+    const color = nextAreaColor(this.model);
+    this.editStructure((l, s, e) => addGroupInBlock(l, s, e, areaName, [table], color), {});
+  }
+
+  // lista con buscador: otras áreas y "Nueva área…"
+  private chooseArea(table: string) {
+    if (!this.plugin) return;
+    const cur = this.groupOf.get(table);
+    const items: AreaChoice[] = this.model.groups
+      .filter((g) => g.name !== cur)
+      .map((g) => ({ label: g.name, area: g.name }));
+    items.push({ label: t("newArea"), area: null });
+    new AreaSuggestModal(this.plugin.app, items, (c) => {
+      if (c.area) this.moveTableToArea(table, c.area);
+      else this.promptText(t("newAreaPrompt"), "", (v) => this.createAreaWithTable(v, table));
+    }).open();
+  }
+
+  private renameArea(oldName: string) {
+    this.promptText(t("renameAreaPrompt"), oldName, (v) => {
+      if (v === oldName) return;
+      if (!NAME_RE.test(v)) {
+        new Notice(t("invalidName"));
+        return;
+      }
+      if (this.model.groups.some((g) => g.name === v)) {
+        new Notice(t("areaExists", { name: v }));
+        return;
+      }
+      this.editBlock((l, s, e) => renameGroupInBlock(l, s, e, oldName, v), t("editBlockFail"));
+    });
+  }
+
+  private setAreaColor(name: string, color: string | null) {
+    this.editBlock(
+      (l, s, e) => setGroupColorInBlock(l, s, e, name, color),
+      t("editBlockFail")
+    );
   }
 
   // Colapsa o expande un área: redibuja al instante (sin ELK) y guarda la
@@ -1519,6 +1721,18 @@ class Diagram extends MarkdownRenderChild {
         .setIcon("rotate-ccw")
         .onClick(() => this.setHeaderColor(name, null))
     );
+    // áreas: la pertenencia solo cambia por menú (arrastrar no la cambia)
+    menu.addItem((i) =>
+      i.setTitle(t("moveToArea")).setIcon("folder-input").onClick(() => this.chooseArea(name))
+    );
+    const curArea = this.groupOf.get(name);
+    if (curArea)
+      menu.addItem((i) =>
+        i
+          .setTitle(t("leaveArea", { name: curArea }))
+          .setIcon("folder-minus")
+          .onClick(() => this.moveTableToArea(name, null))
+      );
     menu.addSeparator();
     menu.addItem((i) =>
       i
@@ -1753,6 +1967,11 @@ class Diagram extends MarkdownRenderChild {
   private pickColor(name: string) {
     const current =
       this.model.tables.find((t) => t.name === name)?.headerColor || "";
+    this.pickColorFor(current, (c) => this.setHeaderColor(name, c));
+  }
+
+  // selector de color nativo; `apply` recibe el color elegido (#rrggbb)
+  private pickColorFor(current: string, apply: (color: string) => void) {
     this.colorInput?.remove();
     const input = activeDocument.createElement("input");
     this.colorInput = input;
@@ -1765,7 +1984,7 @@ class Diagram extends MarkdownRenderChild {
       if (this.colorInput === input) this.colorInput = undefined;
     };
     this.registerDomEvent(input, "change", () => {
-      this.setHeaderColor(name, input.value);
+      apply(input.value);
       cleanup();
     });
     this.registerDomEvent(input, "blur", cleanup);
@@ -1926,6 +2145,33 @@ class Diagram extends MarkdownRenderChild {
     this.view.y = pad - minY * this.view.k;
     this.applyView();
     if (persist) this.scheduleSaveLayout();
+  }
+}
+
+// Opción de la lista "Mover a área…": un área existente o "Nueva área…" (null).
+interface AreaChoice {
+  label: string;
+  area: string | null;
+}
+
+// Lista con buscador para elegir el área destino de una tabla.
+class AreaSuggestModal extends FuzzySuggestModal<AreaChoice> {
+  private items: AreaChoice[];
+  private onPick: (c: AreaChoice) => void;
+  constructor(app: App, items: AreaChoice[], onPick: (c: AreaChoice) => void) {
+    super(app);
+    this.items = items;
+    this.onPick = onPick;
+    this.setPlaceholder(t("moveToAreaPlaceholder"));
+  }
+  getItems(): AreaChoice[] {
+    return this.items;
+  }
+  getItemText(c: AreaChoice): string {
+    return c.label;
+  }
+  onChooseItem(c: AreaChoice): void {
+    this.onPick(c);
   }
 }
 

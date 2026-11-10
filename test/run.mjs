@@ -12,7 +12,7 @@ const root = join(here, "..");
 const out = join(here, ".build");
 mkdirSync(out, { recursive: true });
 
-for (const name of ["parser", "layout", "areas"]) {
+for (const name of ["parser", "layout", "areas", "edits"]) {
   await build({
     entryPoints: [join(root, "src", `${name}.ts`)],
     bundle: true,

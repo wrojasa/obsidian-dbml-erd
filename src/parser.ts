@@ -469,7 +469,7 @@ export function setHeaderColorInLine(
 
 // ---- edición de textos (rename / tipo) sobre las líneas del bloque ----
 
-function esc(s: string): string {
+export function esc(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
@@ -477,12 +477,12 @@ function esc(s: string): string {
 // `indexes`) dentro del rango, como [tipo en minúsculas, línea de apertura,
 // línea de cierre]. Las llaves se cuentan sin las cadenas entre comillas
 // simples, así `Note: 'a {'` no abre nada.
-interface LineBlock {
+export interface LineBlock {
   kind: string;
   open: number;
   close: number;
 }
-function scanNonTableBlocks(
+export function scanNonTableBlocks(
   lines: string[],
   start: number,
   end: number
@@ -514,7 +514,7 @@ function linesInBlocks(blocks: LineBlock[]): Set<number> {
 
 // localiza [lineaDeclaracion, lineaCierre] de una tabla dentro del rango del bloque.
 // El conteo de llaves ignora las que aparezcan dentro de cadenas entre comillas.
-function findTableRange(
+export function findTableRange(
   lines: string[],
   start: number,
   end: number,
@@ -599,16 +599,52 @@ export function renameTableInBlock(
 }
 
 // Línea de miembro de un `TableGroup`: el nombre solo, con `esquema.` opcional.
-function memberLineRe(table: string): RegExp {
+export function memberLineRe(table: string): RegExp {
   return new RegExp(`^(\\s*(?:"?[A-Za-z0-9_]+"?\\.)?)"?${esc(table)}"?(\\s*)$`);
 }
 
 // Índices de las líneas interiores de los cuerpos `TableGroup` del rango.
-function groupMemberLines(lines: string[], start: number, end: number): number[] {
+export function groupMemberLines(lines: string[], start: number, end: number): number[] {
   const out: number[] = [];
   for (const b of scanNonTableBlocks(lines, start, end)) {
     if (b.kind !== "tablegroup") continue;
     for (let i = b.open + 1; i < b.close; i++) out.push(i);
+  }
+  return out;
+}
+
+// cualquier línea de miembro (un nombre de tabla, con `esquema.` opcional)
+export const ANY_MEMBER_RE = /^\s*"?(?:[A-Za-z0-9_]+"?\."?)?[A-Za-z0-9_]+"?\s*$/;
+// nombre del área en la línea de encabezado `TableGroup nombre …`
+export const GROUP_HEAD_RE = /^\s*TableGroup\s+"?([A-Za-z0-9_]+)"?/i;
+
+// Líneas a borrar de las áreas que una edición deja sin tablas: si todas las
+// líneas de miembro de un área están en `removed` (y al menos una lo está),
+// se borra el bloque completo y su línea `// @group <área> collapsed`. Un
+// área vacía no se dibuja ni se alcanza desde el canvas.
+export function emptiedGroupLines(
+  lines: string[],
+  start: number,
+  end: number,
+  removed: Set<number>
+): number[] {
+  const out: number[] = [];
+  for (const b of scanNonTableBlocks(lines, start, end)) {
+    if (b.kind !== "tablegroup") continue;
+    let lost = 0;
+    let left = 0;
+    for (let i = b.open + 1; i < b.close; i++) {
+      if (!ANY_MEMBER_RE.test(lines[i])) continue;
+      if (removed.has(i)) lost++;
+      else left++;
+    }
+    if (!lost || left) continue;
+    for (let i = b.open; i <= b.close; i++) out.push(i);
+    const gm = lines[b.open].match(GROUP_HEAD_RE);
+    if (!gm) continue;
+    const stateRe = new RegExp(`^\\s*//\\s*@group\\s+"?${esc(gm[1])}"?\\s+collapsed\\b`);
+    for (let i = start; i <= end && i < lines.length; i++)
+      if (stateRe.test(lines[i])) out.push(i);
   }
   return out;
 }
@@ -651,10 +687,12 @@ export function deleteTableInBlock(
   const e = esc(name);
   const toDelete = new Set<number>();
   for (let i = decl; i <= close; i++) toDelete.add(i);
-  // también deja de ser miembro de su `TableGroup` (el área queda aunque se vacíe)
+  // también deja de ser miembro de su `TableGroup`; si era la última tabla,
+  // el área se elimina con su línea @group
   const member = memberLineRe(name);
   for (const i of groupMemberLines(lines, start, end))
     if (member.test(lines[i])) toDelete.add(i);
+  for (const i of emptiedGroupLines(lines, start, end, toDelete)) toDelete.add(i);
   const refRe = new RegExp(`\\b${e}\\.[A-Za-z0-9_]+`);
   const relLineRe =
     /^\s*(?:Ref\b[^:\n]*:\s*)?"?[A-Za-z0-9_]+"?\.[A-Za-z0-9_]+\s*(?:<>|>|<|-)\s*"?[A-Za-z0-9_]+"?\.[A-Za-z0-9_]+/i;
